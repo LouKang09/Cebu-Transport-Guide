@@ -1,5 +1,239 @@
+# ============================================================
+# Cebu Transport Guide — defensive .gitignore
+# Purpose: reduce the risk of accidentally committing secrets,
+# credentials, local state, generated files, and machine-specific data.
+# ============================================================
+
+# -----------------------------
+# Dependencies
+# -----------------------------
 node_modules/
+bower_components/
+jspm_packages/
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+
+# -----------------------------
+# Environment variables / secrets
+# Never commit real environment files.
+# Keep sanitized templates only.
+# -----------------------------
 .env
 .env.*
+*.env
+*.env.*
+!.env.example
+!.env.sample
+!.env.template
+!.env.example.*
+!.env.sample.*
+
+# Common secret/config files
+secrets/
+.secret/
+.secrets/
+credentials/
+credential/
+private/
+.private/
+auth/
+.auth/
+
+*.secret
+*.secrets
+*.credentials
+*.credential
+
+# Local package manager credentials/tokens
+.npmrc
+.yarnrc
+.yarnrc.yml
+.pnpmrc
+.netrc
+.git-credentials
+
+# -----------------------------
+# Private keys / certificates
+# -----------------------------
+*.pem
+*.key
+*.pkey
+*.ppk
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.der
+*.cer
+*.crt
+*.csr
+
+id_rsa
+id_rsa.*
+id_dsa
+id_dsa.*
+id_ecdsa
+id_ecdsa.*
+id_ed25519
+id_ed25519.*
+
+# -----------------------------
+# Cloud / service credentials
+# -----------------------------
+.aws/
+.azure/
+.gcloud/
+.config/gcloud/
+.ssh/
+
+service-account*.json
+service_account*.json
+credentials*.json
+credential*.json
+*serviceAccount*.json
+firebase-adminsdk*.json
+gcloud-service-key*.json
+google-credentials*.json
+
+# Railway local/project metadata
+.railway/
+railway.local.*
+railway.env
+railway.env.*
+
+# -----------------------------
+# Local databases / dumps / backups
+# -----------------------------
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.dump
+*.backup
+*.bak
+*.bkp
+
+backups/
+backup/
+dumps/
+local-data/
+local_data/
+
+# -----------------------------
+# Logs / runtime state
+# -----------------------------
+logs/
+*.log
+*.log.*
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+*.pid
+*.pid.lock
+*.seed
+pids/
+
+# -----------------------------
+# Build output / caches
+# -----------------------------
+dist/
+build/
+out/
+coverage/
+.nyc_output/
+.cache/
+.parcel-cache/
+.vite/
+.turbo/
+.next/
+.nuxt/
+.output/
+.svelte-kit/
+.eslintcache
+.stylelintcache
+
+# TypeScript / tooling
+*.tsbuildinfo
+
+# -----------------------------
+# Temporary / generated files
+# -----------------------------
+tmp/
+temp/
+.tmp/
+.temp/
+*.tmp
+*.temp
+*.swp
+*.swo
+*.orig
+*.rej
+
+# Archives often used for local backups
+*.7z
+*.rar
+*.tar
+*.tar.gz
+*.tgz
+
+# -----------------------------
+# IDE / editor metadata
+# -----------------------------
+.vscode/
+.idea/
+*.iml
+*.sublime-project
+*.sublime-workspace
+
+# -----------------------------
+# Operating-system files
+# -----------------------------
 .DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+Thumbs.db
+Thumbs.db:encryptable
+Desktop.ini
+$RECYCLE.BIN/
+
+# -----------------------------
+# Testing / reports
+# -----------------------------
+playwright-report/
+test-results/
+cypress/screenshots/
+cypress/videos/
+junit.xml
+reports/
+
+# -----------------------------
+# Local HTTPS / dev certificates
+# -----------------------------
+certs/
+certificates/
+ssl/
+tls/
+
+# -----------------------------
+# Misc sensitive local files
+# -----------------------------
+.envrc
+.direnv/
+.local/
+.localsettings
+.localsettings.*
+config.local.*
+*.local.json
+*.local.yaml
+*.local.yml
+
+# Do NOT ignore dependency lockfiles.
+# package-lock.json / yarn.lock / pnpm-lock.yaml should normally be committed.
