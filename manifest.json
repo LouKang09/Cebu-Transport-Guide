@@ -1,0 +1,9 @@
+{
+  "name":"Cebu Map Guide",
+  "short_name":"Cebu Guide",
+  "start_url":"./",
+  "display":"standalone",
+  "background_color":"#f3f5f7",
+  "theme_color":"#0b1638",
+  "description":"Metro Cebu commuter transport atlas"
+}
