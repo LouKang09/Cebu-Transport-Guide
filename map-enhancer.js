@@ -2142,14 +2142,21 @@
     decorateDialog();
     scheduleRouteBookExpansion();
 
-    document.getElementById('findRouteBtn')?.addEventListener('click',()=>setTimeout(()=>{
-      decoratePlanner();
-      autoPreviewPlan();
-    },0));
+    const fromInput=document.getElementById('fromInput');
+    const toInput=document.getElementById('toInput');
+    setupPlaceAutocomplete(fromInput);
+    setupPlaceAutocomplete(toInput);
+    scheduleSpatialIndex();
+
+    document.getElementById('findRouteBtn')?.addEventListener('click',event=>{
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      runSpatialPlanner();
+    },true);
 
     document.querySelectorAll('.quick-chip').forEach(button=>button.addEventListener('click',()=>setTimeout(()=>{
-      decoratePlanner();
-      autoPreviewPlan();
+      clearPlaceSelection(fromInput);
+      clearPlaceSelection(toInput);
     },0)));
 
     document.getElementById('routeSearch')?.addEventListener('input',()=>setTimeout(resetRouteScroll,0));
