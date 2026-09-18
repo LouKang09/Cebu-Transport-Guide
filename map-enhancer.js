@@ -1751,6 +1751,65 @@
     }).slice(0,7);
   }
 
+  async function refineSpatialItineraries(itineraries,origin,destination){
+    const shortlist=itineraries.slice(0,5);
+    const refined=await Promise.all(shortlist.map(async itinerary=>{
+      try{
+        if(itinerary.rides===1){
+          const resolved=await resolveRoutePath(itinerary.entry.route,{direction:itinerary.entry.direction});
+          if(!resolved.roadFollowed||resolved.geometry.length<2)return itinerary;
+          const board=nearestProjectionOnPolyline(origin.coord,resolved.geometry);
+          const drop=nearestProjectionOnPolyline(destination.coord,resolved.geometry);
+          if(board.distance>SPATIAL_BOARD_MAX_METERS||drop.distance>SPATIAL_DROP_MAX_METERS)return null;
+          if(drop.progress<=board.progress+.015)return null;
+          return{
+            ...itinerary,
+            board,
+            drop,
+            roadRefined:true,
+            score:board.distance*1.12+drop.distance*1.2+180
+          };
+        }
+
+        const [firstResolved,secondResolved]=await Promise.all([
+          resolveRoutePath(itinerary.first.route,{direction:itinerary.first.direction}),
+          resolveRoutePath(itinerary.second.route,{direction:itinerary.second.direction})
+        ]);
+        if(!firstResolved.roadFollowed||!secondResolved.roadFollowed)return itinerary;
+
+        const board=nearestProjectionOnPolyline(origin.coord,firstResolved.geometry);
+        const drop=nearestProjectionOnPolyline(destination.coord,secondResolved.geometry);
+        const connection=closestPolylineConnection(firstResolved.geometry,secondResolved.geometry);
+
+        if(board.distance>SPATIAL_BOARD_MAX_METERS||drop.distance>SPATIAL_DROP_MAX_METERS)return null;
+        if(connection.distance>SPATIAL_TRANSFER_MAX_METERS)return null;
+        if(connection.progressA<=board.progress+.015)return null;
+        if(drop.progress<=connection.progressB+.015)return null;
+
+        const transferMid=[
+          (connection.aCoord[0]+connection.bCoord[0])/2,
+          (connection.aCoord[1]+connection.bCoord[1])/2
+        ];
+
+        return{
+          ...itinerary,
+          board,
+          drop,
+          connection,
+          transferName:nearestCatalogName(transferMid),
+          roadRefined:true,
+          score:board.distance*1.1+drop.distance*1.2+connection.distance*1.65+820
+        };
+      }catch{
+        return itinerary;
+      }
+    }));
+
+    const usable=refined.filter(Boolean).sort((a,b)=>a.score-b.score);
+    const untouched=itineraries.slice(5);
+    return[...usable,...untouched].slice(0,7);
+  }
+
   function routeModeLabel(route){
     return labelFor(route.mode)||'Public transport';
   }
@@ -1771,7 +1830,9 @@
     const summaryStrong=document.createElement('strong');
     summaryStrong.textContent=`${plan.origin.label} → ${plan.destination.label}`;
     const summarySmall=document.createElement('small');
-    summarySmall.textContent='Live Cebu place search + route proximity. Walking distances are approximate.';
+    summarySmall.textContent=plan.refined
+      ?'Live Cebu place search + road-geometry refinement. Walking distances are approximate.'
+      :'Live Cebu place search + route proximity. Refining the best matches against road geometry…';
     summary.append(summaryStrong,summarySmall);
     host.append(summary);
 
@@ -2075,15 +2136,24 @@
       if(serial!==spatialPlannerSerial)return;
 
       const itineraries=findSpatialItineraries(origin,destination);
-      const plan={origin,destination,itineraries};
+      const plan={origin,destination,itineraries,refined:false};
       activeSpatialPlan=plan;
       renderSpatialPlanner(plan);
 
-      if(itineraries.length){
-        showSpatialItinerary(itineraries[0],plan,{scroll:false});
-      }else{
+      if(!itineraries.length){
         clearFocus();
+        return;
       }
+
+      const refined=await refineSpatialItineraries(itineraries,origin,destination);
+      if(serial!==spatialPlannerSerial)return;
+      plan.itineraries=refined;
+      plan.refined=true;
+      activeSpatialPlan=plan;
+      renderSpatialPlanner(plan);
+
+      if(refined.length)showSpatialItinerary(refined[0],plan,{scroll:false});
+      else clearFocus();
     }catch(error){
       if(serial!==spatialPlannerSerial)return;
       renderPlannerError(error?.message||'Place search failed. Try a nearby landmark or barangay.');
