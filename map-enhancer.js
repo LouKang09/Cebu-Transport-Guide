@@ -11,6 +11,22 @@
   const exactish=(a,b)=>{const x=normalize(a),y=normalize(b);return x===y||x.includes(y)||y.includes(x);};
   const colorFor=mode=>modeConfig[mode]?.color||'#64748b';
   const labelFor=mode=>modeConfig[mode]?.label||mode;
+  const segmentPalette=['#2563eb','#0891b2','#0f9f6e','#65a30d','#d97706','#ea580c','#db2777','#7c3aed'];
+
+  // Direction-specific profiles let return trips use different streets instead of
+  // blindly reversing the outbound line. 04L is explicitly configured from the
+  // commuter pattern supplied for this guide; other routes fall back to a clearly
+  // labelled reverse estimate until a direction-specific profile is added.
+  const directionProfiles={
+    '04L':{
+      forward:{label:'Lahug → Ayala → SM City Cebu',stops:['Lahug','Ayala','SM City Cebu'],verified:true},
+      reverse:{label:'SM City Cebu → Landers → Kasambagan → Lahug',stops:['SM City Cebu','Landers Superstore Cebu','Kasambagan','Lahug'],verified:true}
+    },
+    '13C':{
+      forward:{label:'Talamban → Country Mall → Ayala → Echavez → Colon',stops:['Talamban','Gaisano Country Mall','Ayala','Echavez','Colon'],verified:true},
+      reverse:{label:'Colon → Echavez → Ayala → Country Mall → Talamban',stops:['Colon','Echavez','Ayala','Gaisano Country Mall','Talamban'],verified:false}
+    }
+  };
 
   const extraPlaces=[
     ['Apas',10.3338,123.9078],['IT Park',10.3292,123.9067],['Cebu IT Park',10.3292,123.9067],['Lahug',10.3232,123.8994],['JY Square',10.3250,123.8982],
@@ -25,7 +41,8 @@
     ['B. Rodriguez',10.3052,123.8822],['Englis',10.2985,123.8830],['Tabo-an',10.2934,123.8912],['Pardo',10.2810,123.8620],['Basak',10.2734,123.8540],
     ['Bulacao',10.2642,123.8517],['Punta',10.2871,123.8790],['SRP',10.2818,123.8814],['SM Seaside',10.2818,123.8814],['Il Corso',10.2528,123.8814],
     ['Tabunok',10.2597,123.8465],['Talisay',10.2447,123.8494],['Minglanilla',10.2450,123.7964],['Naga',10.2089,123.7580],['Carcar',10.1060,123.6402],
-    ['Mactan-Cebu International Airport',10.3075,123.9794],['MCIA',10.3075,123.9794],['Cebu Doctors University',10.3361,123.9351],['USC Downtown',10.2978,123.8980],['USJ-R',10.2959,123.8999]
+    ['Mactan-Cebu International Airport',10.3075,123.9794],['MCIA',10.3075,123.9794],['Cebu Doctors University',10.3361,123.9351],['USC Downtown',10.2978,123.8980],['USJ-R',10.2959,123.8999],
+    ['Landers Superstore Cebu',10.32072,123.90958],['Landers',10.32072,123.90958],['Kasambagan',10.3243,123.9101],['Echavez',10.3056,123.89988]
   ];
 
   const getRoutes=()=>typeof ROUTES!=='undefined'?ROUTES:[];
@@ -45,6 +62,14 @@
   let focusRequestSerial=0;
   let expandingRouteBook=false;
   let expandTimer=null;
+  let activeRouteView=null;
+  let liveLayer=null;
+  let liveWatchId=null;
+  let liveMarker=null;
+  let liveAccuracyCircle=null;
+  let lastLivePosition=null;
+  let followLiveLocation=true;
+  let highlightedSegmentIndex=-1;
 
   const coordFor=name=>{
     const q=normalize(name);if(!q)return null;
@@ -53,30 +78,67 @@
     return hit?[hit.lat,hit.lng]:null;
   };
 
-  const routeHas=(route,place)=>route.stops.some(stop=>exactish(place,stop));
+  const routeHas=(route,place)=>['forward','reverse'].some(direction=>baseDirectionProfile(route,direction).stops.some(stop=>exactish(place,stop)));
 
-  const routePoints=(route,from='',to='')=>{
-    let stops=route.stops.slice();
+  function baseDirectionProfile(route,direction='forward'){
+    const configured=directionProfiles[route.code]?.[direction];
+    if(configured)return{...configured,direction};
+    const stops=direction==='reverse'?[...route.stops].reverse():[...route.stops];
+    return{
+      direction,
+      label:stops.join(' → '),
+      stops,
+      verified:direction==='forward'
+    };
+  }
+
+  function inferDirection(route,from='',to='',requested=''){
+    if(requested==='forward'||requested==='reverse')return requested;
+    if(from&&to){
+      for(const direction of ['forward','reverse']){
+        const profile=baseDirectionProfile(route,direction);
+        const fromIndex=profile.stops.findIndex(stop=>exactish(from,stop));
+        const toIndex=profile.stops.findIndex(stop=>exactish(to,stop));
+        if(fromIndex>=0&&toIndex>=0&&fromIndex<toIndex)return direction;
+      }
+    }
+    return'forward';
+  }
+
+  function routeWaypoints(route,{from='',to='',direction=''}={}){
+    const resolvedDirection=inferDirection(route,from,to,direction);
+    const profile=baseDirectionProfile(route,resolvedDirection);
+    let stops=[...profile.stops];
+
     if(from&&to){
       const fromIndex=stops.findIndex(stop=>exactish(from,stop));
       const toIndex=stops.findIndex(stop=>exactish(to,stop));
-      if(fromIndex>=0&&toIndex>=0&&fromIndex!==toIndex){
-        stops=fromIndex<toIndex?stops.slice(fromIndex,toIndex+1):stops.slice(toIndex,fromIndex+1).reverse();
-      }
+      if(fromIndex>=0&&toIndex>=0&&fromIndex<toIndex)stops=stops.slice(fromIndex,toIndex+1);
     }
 
-    const points=[];
-    stops.forEach(stop=>{
-      const c=coordFor(stop);
-      if(c&&(!points.length||Math.abs(points.at(-1)[0]-c[0])>.00001||Math.abs(points.at(-1)[1]-c[1])>.00001))points.push(c);
+    const waypoints=[];
+    stops.forEach(name=>{
+      const coord=coordFor(name);
+      if(!coord)return;
+      const previous=waypoints.at(-1);
+      if(!previous||Math.abs(previous.coord[0]-coord[0])>.00001||Math.abs(previous.coord[1]-coord[1])>.00001){
+        waypoints.push({name,coord});
+      }
     });
 
-    if(points.length<2){
+    if(waypoints.length<2){
       const fallback=getMapLines().find(line=>normalize(line.id)===normalize(route.code)||normalize(line.name).includes(normalize(route.code)));
-      if(fallback?.points?.length>1)return fallback.points;
+      if(fallback?.points?.length>1){
+        return{
+          profile,
+          waypoints:fallback.points.map((coord,index)=>({name:index===0?stops[0]||route.code:index===fallback.points.length-1?stops.at(-1)||route.code:`Route point ${index+1}`,coord}))
+        };
+      }
     }
-    return points;
-  };
+    return{profile,waypoints};
+  }
+
+  const routePoints=(route,from='',to='',direction='')=>routeWaypoints(route,{from,to,direction}).waypoints.map(item=>item.coord);
 
   const thinWaypoints=(points,max=MAX_ROUTER_WAYPOINTS)=>{
     if(points.length<=max)return points;
@@ -129,13 +191,58 @@
     return result;
   }
 
+  function nearestGeometryIndex(geometry,coord,startIndex=0){
+    let bestIndex=startIndex;
+    let bestDistance=Infinity;
+    for(let i=startIndex;i<geometry.length;i++){
+      const dLat=geometry[i][0]-coord[0];
+      const dLng=(geometry[i][1]-coord[1])*Math.cos(coord[0]*Math.PI/180);
+      const score=dLat*dLat+dLng*dLng;
+      if(score<bestDistance){bestDistance=score;bestIndex=i;}
+    }
+    return bestIndex;
+  }
+
+  function splitGeometryByWaypoints(geometry,waypoints){
+    if(geometry.length<2||waypoints.length<2)return[];
+    const indices=[];
+    let cursor=0;
+    waypoints.forEach((waypoint,index)=>{
+      const found=nearestGeometryIndex(geometry,waypoint.coord,cursor);
+      const clamped=index===waypoints.length-1?geometry.length-1:found;
+      indices.push(clamped);
+      cursor=Math.min(geometry.length-1,clamped);
+    });
+    indices[0]=0;
+    indices[indices.length-1]=geometry.length-1;
+
+    return waypoints.slice(0,-1).map((from,index)=>{
+      const start=indices[index];
+      const end=Math.max(start+1,indices[index+1]);
+      const segmentGeometry=geometry.slice(start,Math.min(geometry.length,end+1));
+      return{
+        index,
+        from,
+        to:waypoints[index+1],
+        geometry:segmentGeometry.length>1?segmentGeometry:[from.coord,waypoints[index+1].coord],
+        color:segmentPalette[index%segmentPalette.length],
+        layer:null
+      };
+    });
+  }
+
   async function resolveRoutePath(route,opts={}){
-    const via=routePoints(route,opts.from||'',opts.to||'');
-    if(via.length<2)return{via,geometry:via,distance:null,roadFollowed:false};
+    const routeInfo=routeWaypoints(route,opts);
+    const waypoints=routeInfo.waypoints;
+    const via=waypoints.map(item=>item.coord);
+    if(via.length<2)return{...routeInfo,via,geometry:via,segments:[],distance:null,roadFollowed:false};
     const road=await fetchRoadGeometry(via);
+    const geometry=road.roadFollowed?road.geometry:via;
     return{
+      ...routeInfo,
       via,
-      geometry:road.roadFollowed?road.geometry:via,
+      geometry,
+      segments:road.roadFollowed?splitGeometryByWaypoints(geometry,waypoints):[],
       distance:road.distance,
       roadFollowed:road.roadFollowed,
       error:road.error
@@ -149,19 +256,55 @@
     return(Math.atan2(y,x)*180/Math.PI+360)%360;
   };
 
-  const pinIcon=(kind,label)=>L.divIcon({className:'',html:`<div class="ctg-nav-pin ${kind}"><span>${label}</span></div>`,iconSize:[34,34],iconAnchor:[10,31]});
+  const escapeHtml=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  const pinIcon=(kind,label)=>L.divIcon({className:'',html:`<div class="ctg-nav-pin ${kind}"><span>${escapeHtml(label)}</span></div>`,iconSize:[34,34],iconAnchor:[10,31]});
   const stopIcon=color=>L.divIcon({className:'',html:`<span class="ctg-route-stop" style="--route-color:${color}"></span>`,iconSize:[13,13],iconAnchor:[6.5,6.5]});
   const arrowIcon=(color,angle)=>L.divIcon({className:'',html:`<span class="ctg-direction-arrow" style="--route-color:${color};transform:rotate(${angle}deg)">➜</span>`,iconSize:[28,28],iconAnchor:[14,14]});
+  const waypointIcon=(index,color,name)=>L.divIcon({
+    className:'',
+    html:`<div class="ctg-waypoint-wrap"><span class="ctg-waypoint-pin" style="--waypoint-color:${color}">${index+1}</span><span class="ctg-waypoint-map-label">${escapeHtml(name)}</span></div>`,
+    iconSize:[118,42],
+    iconAnchor:[18,20]
+  });
+  const liveLocationIcon=status=>L.divIcon({
+    className:'',
+    html:`<div class="ctg-live-marker ${status||'tracking'}"><span></span></div>`,
+    iconSize:[28,28],
+    iconAnchor:[14,14]
+  });
 
   function createMapChrome(){
     const card=document.querySelector('.map-card');
     if(!card||card.querySelector('.ctg-map-controls'))return;
     card.insertAdjacentHTML('beforeend',`
       <div class="ctg-map-top" aria-live="polite"><div class="ctg-trip-summary" hidden><span class="ctg-trip-dot"></span><span class="ctg-trip-copy"><small class="ctg-trip-eyebrow">Selected route</small><strong class="ctg-trip-title">Route</strong></span><span class="ctg-route-loading" hidden aria-hidden="true"></span><button class="ctg-map-close" type="button" aria-label="Clear selected route">×</button></div></div>
-      <div class="ctg-map-controls" aria-label="Map controls"><button class="ctg-map-fab ctg-zoom-in" type="button" aria-label="Zoom in">+</button><button class="ctg-map-fab ctg-zoom-out" type="button" aria-label="Zoom out">−</button><button class="ctg-map-fab ctg-fit-route" type="button" aria-label="Fit selected route" title="Fit selected route" hidden>⌗</button><button class="ctg-map-fab ctg-overview" type="button" aria-label="Show Metro Cebu overview" title="Cebu overview">◎</button></div>
-      <div class="ctg-nav-sheet" hidden><div class="ctg-sheet-handle" aria-hidden="true"></div><div class="ctg-sheet-row"><span class="ctg-sheet-badge">17B</span><div class="ctg-sheet-copy"><span class="ctg-sheet-mode">Jeepney</span><strong class="ctg-sheet-title">IT Park → Carbon</strong><small class="ctg-sheet-meta">Following mapped roads…</small></div></div><div class="ctg-sheet-actions"><button class="ghost-btn compact ctg-sheet-details" type="button">Route details</button><button class="primary-btn compact ctg-sheet-fit" type="button">Fit route</button></div></div>
+      <div class="ctg-map-controls" aria-label="Map controls">
+        <button class="ctg-map-fab ctg-location" type="button" aria-label="Share live location" title="Share live location">⌖</button>
+        <button class="ctg-map-fab ctg-zoom-in" type="button" aria-label="Zoom in">+</button>
+        <button class="ctg-map-fab ctg-zoom-out" type="button" aria-label="Zoom out">−</button>
+        <button class="ctg-map-fab ctg-fit-route" type="button" aria-label="Fit selected route" title="Fit selected route" hidden>⌗</button>
+        <button class="ctg-map-fab ctg-overview" type="button" aria-label="Show Metro Cebu overview" title="Cebu overview">◎</button>
+      </div>
+      <div class="ctg-nav-sheet" hidden>
+        <div class="ctg-sheet-handle" aria-hidden="true"></div>
+        <div class="ctg-sheet-row"><span class="ctg-sheet-badge">17B</span><div class="ctg-sheet-copy"><span class="ctg-sheet-mode">Jeepney</span><strong class="ctg-sheet-title">IT Park → Carbon</strong><small class="ctg-sheet-meta">Following mapped roads…</small></div></div>
+        <div class="ctg-direction-switch" hidden aria-label="Route direction">
+          <button type="button" data-direction="forward">Outbound</button>
+          <button type="button" data-direction="reverse">Return</button>
+          <small class="ctg-direction-note"></small>
+        </div>
+        <div class="ctg-waypoint-strip" hidden aria-label="Major locations on this route"></div>
+        <div class="ctg-live-status" hidden aria-live="polite">
+          <span class="ctg-live-dot"></span>
+          <div class="ctg-live-copy"><strong>Live location</strong><small>Waiting for GPS…</small></div>
+          <button class="ctg-live-follow" type="button">Follow</button>
+          <button class="ctg-live-stop" type="button">Stop</button>
+        </div>
+        <div class="ctg-sheet-actions"><button class="ghost-btn compact ctg-sheet-details" type="button">Route details</button><button class="primary-btn compact ctg-sheet-fit" type="button">Fit route</button></div>
+      </div>
       <div class="ctg-schematic-label">Road-following estimate from mapped route points</div>`);
 
+    card.querySelector('.ctg-location').addEventListener('click',toggleLiveLocation);
     card.querySelector('.ctg-zoom-in').addEventListener('click',()=>map.zoomIn(.5));
     card.querySelector('.ctg-zoom-out').addEventListener('click',()=>map.zoomOut(.5));
     card.querySelector('.ctg-fit-route').addEventListener('click',fitFocused);
@@ -170,13 +313,34 @@
     card.querySelector('.ctg-map-close').addEventListener('click',clearFocus);
     card.querySelector('.ctg-sheet-details').addEventListener('click',event=>{const id=event.currentTarget.dataset.route;if(id)openExistingRouteDialog(id);});
 
+    card.querySelector('.ctg-direction-switch').addEventListener('click',event=>{
+      const button=event.target.closest('button[data-direction]');
+      if(!button||!activeRouteView?.route)return;
+      showRoute(activeRouteView.route.id,{scroll:false,direction:button.dataset.direction});
+    });
+
+    card.querySelector('.ctg-waypoint-strip').addEventListener('click',event=>{
+      const button=event.target.closest('button[data-waypoint-index]');
+      const index=Number(button?.dataset.waypointIndex);
+      const waypoint=activeRouteView?.resolved?.waypoints?.[index];
+      if(!waypoint)return;
+      map.flyTo(waypoint.coord,Math.max(map.getZoom(),15.5),{duration:.55});
+    });
+
+    card.querySelector('.ctg-live-follow').addEventListener('click',()=>{
+      followLiveLocation=true;
+      if(lastLivePosition)map.flyTo([lastLivePosition.lat,lastLivePosition.lng],Math.max(map.getZoom(),16),{duration:.5});
+      updateLiveFollowButton();
+    });
+    card.querySelector('.ctg-live-stop').addEventListener('click',stopLiveLocation);
+
     const reset=document.getElementById('fitMapBtn');
     if(reset){
       reset.textContent='Cebu overview';
       reset.addEventListener('click',()=>setTimeout(resetOverview,0));
     }
     const panelText=document.querySelector('.map-panel > p');
-    if(panelText)panelText.textContent='Tap Map on a route or planner result. Selected routes follow the mapped road network instead of straight point-to-point lines.';
+    if(panelText)panelText.textContent='Tap Map on a route to see color-coded major locations, switch outbound/return direction, or opt in to live GPS route tracking.';
   }
 
   function setGeometryLabel(text){
@@ -208,24 +372,83 @@
   }
 
   function drawResolvedRoute(route,resolved,color=colorFor(route.mode),opts={}){
-    const {via,geometry,roadFollowed}=resolved;
-    if(roadFollowed&&geometry.length>1){
-      L.polyline(geometry,{color:'#fff',weight:11,opacity:.96,lineCap:'round',lineJoin:'round',interactive:false}).addTo(focusLayer);
-      L.polyline(geometry,{color,weight:6.5,opacity:1,lineCap:'round',lineJoin:'round'})
-        .bindTooltip(`${route.code} · ${route.corridor}`,{className:'ctg-route-tooltip',sticky:true})
-        .addTo(focusLayer);
-      addDirectionArrows(geometry,color);
+    const {waypoints,segments,roadFollowed}=resolved;
+
+    if(roadFollowed&&segments.length){
+      segments.forEach(segment=>{
+        const segmentColor=opts.segmentColorMode==='base'?color:segment.color;
+        L.polyline(segment.geometry,{color:'#fff',weight:11,opacity:.96,lineCap:'round',lineJoin:'round',interactive:false}).addTo(focusLayer);
+        segment.layer=L.polyline(segment.geometry,{color:segmentColor,weight:6.5,opacity:1,lineCap:'round',lineJoin:'round'})
+          .bindTooltip(`${segment.from.name} → ${segment.to.name}`,{className:'ctg-route-tooltip',sticky:true})
+          .addTo(focusLayer);
+        addDirectionArrows(segment.geometry,segmentColor);
+      });
     }
 
-    via.slice(1,-1).forEach(point=>L.marker(point,{icon:stopIcon(color),interactive:false,zIndexOffset:450}).addTo(focusLayer));
-
-    if(!opts.skipPins&&via.length){
-      L.marker(via[0],{icon:pinIcon('start','A'),zIndexOffset:900}).bindTooltip(opts.from||route.stops[0],{direction:'top',className:'ctg-route-tooltip'}).addTo(focusLayer);
-      L.marker(via.at(-1),{icon:pinIcon('end','B'),zIndexOffset:900}).bindTooltip(opts.to||route.stops.at(-1),{direction:'top',className:'ctg-route-tooltip'}).addTo(focusLayer);
+    if(!opts.skipPins){
+      waypoints.forEach((waypoint,index)=>{
+        const color=index===0?(segments[0]?.color||color):(segments[index-1]?.color||segments.at(-1)?.color||color);
+        L.marker(waypoint.coord,{icon:waypointIcon(index,color,waypoint.name),zIndexOffset:850+index})
+          .bindTooltip(waypoint.name,{direction:'top',className:'ctg-route-tooltip'})
+          .addTo(focusLayer);
+      });
     }
   }
 
-  function updateSheet({route=null,transfer='',title='',subtitle='',color='#7c4dff',loading=false}){
+  function renderWaypointStrip(resolved){
+    const strip=document.querySelector('.ctg-waypoint-strip');
+    if(!strip)return;
+    const waypoints=resolved?.waypoints||[];
+    if(waypoints.length<2){
+      strip.hidden=true;
+      strip.replaceChildren();
+      return;
+    }
+
+    strip.hidden=false;
+    strip.replaceChildren(...waypoints.map((waypoint,index)=>{
+      const button=document.createElement('button');
+      const color=index===0?(resolved.segments[0]?.color||'#2563eb'):(resolved.segments[index-1]?.color||resolved.segments.at(-1)?.color||'#2563eb');
+      button.type='button';
+      button.dataset.waypointIndex=String(index);
+      button.className='ctg-waypoint-chip';
+      button.style.setProperty('--waypoint-color',color);
+      const number=document.createElement('span');
+      number.textContent=String(index+1);
+      const label=document.createElement('strong');
+      label.textContent=waypoint.name;
+      button.append(number,label);
+      return button;
+    }));
+  }
+
+  function renderDirectionSwitch(route,resolved,allowDirection=true){
+    const wrapper=document.querySelector('.ctg-direction-switch');
+    if(!wrapper)return;
+    if(!route||!allowDirection){
+      wrapper.hidden=true;
+      return;
+    }
+    wrapper.hidden=false;
+    const current=resolved?.profile?.direction||'forward';
+    wrapper.querySelectorAll('button[data-direction]').forEach(button=>{
+      const active=button.dataset.direction===current;
+      button.classList.toggle('active',active);
+      button.setAttribute('aria-pressed',active?'true':'false');
+    });
+    const profile=resolved?.profile;
+    const note=wrapper.querySelector('.ctg-direction-note');
+    if(note){
+      note.textContent=current==='reverse'&&!profile?.verified
+        ? 'Return direction is an estimate until a direction-specific route is verified.'
+        : current==='reverse'
+          ? 'Direction-specific return path'
+          : 'Outbound path';
+    }
+  }
+
+
+  function updateSheet({route=null,transfer='',title='',subtitle='',color='#7c4dff',loading=false,resolved=null,allowDirection=true}){
     const card=document.querySelector('.map-card');
     if(!card)return;
     const summary=card.querySelector('.ctg-trip-summary');
@@ -248,7 +471,18 @@
     details.hidden=!route||loading;
     details.dataset.route=route?.id||'';
     setMapLoading(loading);
+
+    if(loading){
+      document.querySelector('.ctg-direction-switch')?.setAttribute('hidden','');
+      document.querySelector('.ctg-waypoint-strip')?.setAttribute('hidden','');
+    }else{
+      renderDirectionSwitch(route,resolved,allowDirection&&!transfer);
+      renderWaypointStrip(transfer?null:resolved);
+    }
+
+    updateLiveStatusUI();
   }
+
 
   function fitFocused(){
     if(!focusedBounds)return;
@@ -263,7 +497,7 @@
     });
   }
 
-  async function showRoute(id,{scroll=true,from='',to=''}={}){
+  async function showRoute(id,{scroll=true,from='',to='',direction=''}={}){
     const route=getRoutes().find(item=>item.id===id);
     if(!route||!map)return;
 
@@ -273,17 +507,22 @@
     focusedRouteId=id;
     focusedTransfer=null;
     focusedBounds=null;
+    activeRouteView=null;
+    highlightedSegmentIndex=-1;
+
+    const preview=routeWaypoints(route,{from,to,direction});
+    const previewTitle=`${route.code} · ${preview.profile.label}`;
 
     updateSheet({
       route,
-      title:`${route.code} · ${route.corridor}`,
-      subtitle:'Matching mapped stops to Cebu roads…',
+      title:previewTitle,
+      subtitle:'Matching named locations to Cebu roads…',
       color:colorFor(route.mode),
       loading:true
     });
     setGeometryLabel('Matching route to the road network…');
 
-    const resolved=await resolveRoutePath(route,{from,to});
+    const resolved=await resolveRoutePath(route,{from,to,direction});
     if(serial!==focusRequestSerial)return;
 
     focusLayer.clearLayers();
@@ -291,28 +530,41 @@
     if(resolved.geometry.length>1)focusedBounds=L.latLngBounds(resolved.geometry);
     else if(resolved.via.length)focusedBounds=L.latLngBounds(resolved.via);
 
+    activeRouteView={
+      route,
+      resolved,
+      direction:resolved.profile.direction,
+      from,
+      to
+    };
+
     const km=resolved.distance!=null?`${(resolved.distance/1000).toFixed(1)} km · `:'';
+    const directionLabel=resolved.profile.direction==='reverse'?'Return':'Outbound';
     if(resolved.roadFollowed){
-      setGeometryLabel('Road-following estimate via OpenStreetMap roads · actual PUV turns may vary');
+      setGeometryLabel('Color sections mark major locations · live GPS can compare your position with this road-following route');
       updateSheet({
         route,
-        title:`${route.code} · ${route.corridor}`,
-        subtitle:`${km}${resolved.via.length} mapped route points · road-following geometry`,
+        resolved,
+        title:`${route.code} · ${resolved.profile.label}`,
+        subtitle:`${directionLabel} · ${km}${resolved.waypoints.length} named locations · tap a colored location below`,
         color:colorFor(route.mode)
       });
     }else{
-      setGeometryLabel('Road routing unavailable right now · mapped stop points only');
+      setGeometryLabel('Road routing unavailable right now · mapped location pins only');
       updateSheet({
         route,
-        title:`${route.code} · ${route.corridor}`,
-        subtitle:'Road path unavailable right now. Showing mapped stops without a misleading straight-line route.',
+        resolved,
+        title:`${route.code} · ${resolved.profile.label}`,
+        subtitle:'Road path unavailable right now. Showing named location pins without a misleading straight line.',
         color:colorFor(route.mode)
       });
     }
 
+    if(lastLivePosition)updateLiveRouteStatus(lastLivePosition);
     if(focusedBounds)fitFocused();
     if(scroll)document.getElementById('map-section')?.scrollIntoView({behavior:'smooth',block:'start'});
   }
+
 
   async function showTransfer(aId,bId,common,{scroll=true,from='',to=''}={}){
     const a=getRoutes().find(item=>item.id===aId);
@@ -325,6 +577,8 @@
     focusedRouteId=null;
     focusedTransfer={aId,bId,common,from,to};
     focusedBounds=null;
+    activeRouteView=null;
+    highlightedSegmentIndex=-1;
 
     updateSheet({
       transfer:common,
@@ -342,8 +596,8 @@
     if(serial!==focusRequestSerial)return;
 
     focusLayer.clearLayers();
-    drawResolvedRoute(a,leg1,colorFor(a.mode),{skipPins:true,from,to:common});
-    drawResolvedRoute(b,leg2,colorFor(b.mode),{skipPins:true,from:common,to});
+    drawResolvedRoute(a,leg1,colorFor(a.mode),{skipPins:true,segmentColorMode:'base',from,to:common});
+    drawResolvedRoute(b,leg2,colorFor(b.mode),{skipPins:true,segmentColorMode:'base',from:common,to});
 
     const allGeometry=[...leg1.geometry,...leg2.geometry];
     const start=leg1.via[0],end=leg2.via.at(-1);
@@ -369,6 +623,215 @@
     if(scroll)document.getElementById('map-section')?.scrollIntoView({behavior:'smooth',block:'start'});
   }
 
+  const toRadians=value=>value*Math.PI/180;
+
+  function haversineMeters(a,b){
+    const R=6371000;
+    const dLat=toRadians(b[0]-a[0]);
+    const dLng=toRadians(b[1]-a[1]);
+    const lat1=toRadians(a[0]);
+    const lat2=toRadians(b[0]);
+    const h=Math.sin(dLat/2)**2+Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLng/2)**2;
+    return 2*R*Math.atan2(Math.sqrt(h),Math.sqrt(Math.max(0,1-h)));
+  }
+
+  function pointToSegmentMeters(point,a,b){
+    const refLat=toRadians(point[0]);
+    const metersPerLat=111320;
+    const metersPerLng=111320*Math.cos(refLat);
+    const px=(point[1]-a[1])*metersPerLng;
+    const py=(point[0]-a[0])*metersPerLat;
+    const bx=(b[1]-a[1])*metersPerLng;
+    const by=(b[0]-a[0])*metersPerLat;
+    const lengthSquared=bx*bx+by*by;
+    if(lengthSquared===0)return Math.hypot(px,py);
+    const t=Math.max(0,Math.min(1,(px*bx+py*by)/lengthSquared));
+    return Math.hypot(px-t*bx,py-t*by);
+  }
+
+  function geometryDistanceMeters(point,geometry){
+    let best=Infinity;
+    for(let i=0;i<geometry.length-1;i++){
+      best=Math.min(best,pointToSegmentMeters(point,geometry[i],geometry[i+1]));
+    }
+    return best;
+  }
+
+  function formatDistance(meters){
+    if(!Number.isFinite(meters))return'';
+    if(meters<1000)return`~${Math.max(10,Math.round(meters/10)*10)} m`;
+    return`~${(meters/1000).toFixed(1)} km`;
+  }
+
+  function setLiveMessage(title,meta,state='tracking'){
+    const row=document.querySelector('.ctg-live-status');
+    if(!row||liveWatchId===null)return;
+    row.hidden=false;
+    row.dataset.state=state;
+    row.querySelector('.ctg-live-copy strong').textContent=title;
+    row.querySelector('.ctg-live-copy small').textContent=meta;
+    if(liveMarker)liveMarker.setIcon(liveLocationIcon(state));
+  }
+
+  function updateLiveFollowButton(){
+    const button=document.querySelector('.ctg-live-follow');
+    if(!button)return;
+    button.textContent=followLiveLocation?'Following':'Follow';
+    button.classList.toggle('active',followLiveLocation);
+    button.setAttribute('aria-pressed',followLiveLocation?'true':'false');
+  }
+
+  function highlightActiveSegment(index){
+    if(!activeRouteView?.resolved?.segments)return;
+    activeRouteView.resolved.segments.forEach((segment,segmentIndex)=>{
+      if(!segment.layer)return;
+      const active=segmentIndex===index;
+      const hasActive=index>=0;
+      segment.layer.setStyle({weight:active?9.5:6.5,opacity:hasActive?(active?1:.76):1});
+      if(active)segment.layer.bringToFront();
+    });
+    highlightedSegmentIndex=index;
+
+    document.querySelectorAll('.ctg-waypoint-chip').forEach((chip,chipIndex)=>{
+      chip.classList.toggle('current',index>=0&&(chipIndex===index||chipIndex===index+1));
+    });
+  }
+
+  function updateLiveRouteStatus(position){
+    if(!position||liveWatchId===null)return;
+    if(!activeRouteView?.resolved?.roadFollowed||!activeRouteView.resolved.segments.length){
+      highlightActiveSegment(-1);
+      setLiveMessage('Live location active','Select a road-following route to compare your movement. Location stays in this browser and is not stored.','tracking');
+      return;
+    }
+
+    const point=[position.lat,position.lng];
+    let best={distance:Infinity,index:-1,segment:null};
+    activeRouteView.resolved.segments.forEach((segment,index)=>{
+      const distance=geometryDistanceMeters(point,segment.geometry);
+      if(distance<best.distance)best={distance,index,segment};
+    });
+
+    const accuracy=Number.isFinite(position.accuracy)?position.accuracy:30;
+    const onRouteThreshold=Math.max(45,Math.min(120,accuracy*1.5));
+    const nearRouteThreshold=onRouteThreshold+120;
+    const state=best.distance<=onRouteThreshold?'on':best.distance<=nearRouteThreshold?'near':'off';
+
+    highlightActiveSegment(state==='off'?-1:best.index);
+
+    const nextDistance=best.segment?haversineMeters(point,best.segment.to.coord):null;
+    const section=best.segment?`${best.segment.from.name} → ${best.segment.to.name}`:'Selected route';
+    const next=best.segment?`Next: ${best.segment.to.name} ${formatDistance(nextDistance)}`:'';
+    const accuracyText=`GPS ±${Math.round(accuracy)} m`;
+
+    if(state==='on'){
+      setLiveMessage('On selected route',`${section} · ${next} · ${accuracyText}`,'on');
+    }else if(state==='near'){
+      setLiveMessage('Near selected route',`${Math.round(best.distance)} m from route · ${section} · ${accuracyText}`,'near');
+    }else{
+      setLiveMessage('Off selected route',`${Math.round(best.distance)} m from the mapped route · ${accuracyText}`,'off');
+    }
+  }
+
+  function updateLiveStatusUI(){
+    const row=document.querySelector('.ctg-live-status');
+    const button=document.querySelector('.ctg-location');
+    if(button){
+      const active=liveWatchId!==null;
+      button.classList.toggle('active',active);
+      button.setAttribute('aria-pressed',active?'true':'false');
+      button.title=active?'Stop sharing live location':'Share live location';
+      button.setAttribute('aria-label',active?'Stop sharing live location':'Share live location');
+    }
+    if(!row)return;
+    if(liveWatchId===null){
+      row.hidden=true;
+      return;
+    }
+    row.hidden=false;
+    updateLiveFollowButton();
+    if(lastLivePosition)updateLiveRouteStatus(lastLivePosition);
+    else setLiveMessage('Getting your location','Allow location access when your browser asks. Your position is not stored by this site.','tracking');
+  }
+
+  function handleLivePosition(geoPosition){
+    const {latitude,longitude,accuracy}=geoPosition.coords;
+    const next={lat:latitude,lng:longitude,accuracy,timestamp:geoPosition.timestamp};
+    lastLivePosition=next;
+
+    if(!liveMarker){
+      liveMarker=L.marker([latitude,longitude],{icon:liveLocationIcon('tracking'),zIndexOffset:1200}).addTo(liveLayer);
+      liveAccuracyCircle=L.circle([latitude,longitude],{
+        radius:Math.max(accuracy,5),
+        color:'#2563eb',
+        weight:1,
+        opacity:.45,
+        fillColor:'#2563eb',
+        fillOpacity:.08,
+        interactive:false
+      }).addTo(liveLayer);
+    }else{
+      liveMarker.setLatLng([latitude,longitude]);
+      liveAccuracyCircle?.setLatLng([latitude,longitude]).setRadius(Math.max(accuracy,5));
+    }
+
+    if(followLiveLocation)map.panTo([latitude,longitude],{animate:true,duration:.35});
+    updateLiveRouteStatus(next);
+  }
+
+  function handleLiveError(error){
+    const message=error?.code===1
+      ?'Location permission was denied. Enable location permission in your browser to use live tracking.'
+      :error?.code===2
+        ?'Your device could not determine a location right now.'
+        :'Location timed out. Move somewhere with a clearer GPS signal and try again.';
+    setLiveMessage('Live location unavailable',message,'off');
+    stopLiveLocation({keepMessage:true});
+  }
+
+  function startLiveLocation(){
+    if(liveWatchId!==null)return;
+    if(!navigator.geolocation){
+      window.alert('This browser does not support live location.');
+      return;
+    }
+    followLiveLocation=true;
+    liveWatchId=navigator.geolocation.watchPosition(handleLivePosition,handleLiveError,{
+      enableHighAccuracy:true,
+      maximumAge:3000,
+      timeout:15000
+    });
+    updateLiveStatusUI();
+  }
+
+  function stopLiveLocation(options={}){
+    if(liveWatchId!==null&&navigator.geolocation)navigator.geolocation.clearWatch(liveWatchId);
+    liveWatchId=null;
+    lastLivePosition=null;
+    followLiveLocation=false;
+    highlightedSegmentIndex=-1;
+    liveLayer?.clearLayers();
+    liveMarker=null;
+    liveAccuracyCircle=null;
+    highlightActiveSegment(-1);
+
+    const row=document.querySelector('.ctg-live-status');
+    if(row&&!options.keepMessage)row.hidden=true;
+    const button=document.querySelector('.ctg-location');
+    if(button){
+      button.classList.remove('active');
+      button.setAttribute('aria-pressed','false');
+      button.title='Share live location';
+      button.setAttribute('aria-label','Share live location');
+    }
+    updateLiveFollowButton();
+  }
+
+  function toggleLiveLocation(){
+    if(liveWatchId!==null)stopLiveLocation();
+    else startLiveLocation();
+  }
+
   function clearFocus(){
     ++focusRequestSerial;
     focusLayer.clearLayers();
@@ -376,6 +839,8 @@
     focusedBounds=null;
     focusedRouteId=null;
     focusedTransfer=null;
+    activeRouteView=null;
+    highlightedSegmentIndex=-1;
     setMapLoading(false);
     setGeometryLabel('Road-following estimate from mapped route points');
     const card=document.querySelector('.map-card');
@@ -383,6 +848,8 @@
     card.querySelector('.ctg-trip-summary').hidden=true;
     card.querySelector('.ctg-nav-sheet').hidden=true;
     card.querySelector('.ctg-fit-route').hidden=true;
+    card.querySelector('.ctg-direction-switch').hidden=true;
+    card.querySelector('.ctg-waypoint-strip').hidden=true;
   }
 
   function resetOverview(){
@@ -584,8 +1051,15 @@
     if(!map||!window.L)return;
     catalog=coordCatalog();
     focusLayer=L.layerGroup().addTo(map);
+    liveLayer=L.layerGroup().addTo(map);
     L.control.scale({metric:true,imperial:false,maxWidth:110,position:'bottomleft'}).addTo(map);
     createMapChrome();
+    map.on('dragstart',()=>{
+      if(liveWatchId!==null){
+        followLiveLocation=false;
+        updateLiveFollowButton();
+      }
+    });
     observeDynamicUI();
     setTimeout(()=>map.invalidateSize(),100);
   }
