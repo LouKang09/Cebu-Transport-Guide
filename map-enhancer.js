@@ -372,24 +372,82 @@
   }
 
   function drawResolvedRoute(route,resolved,color=colorFor(route.mode),opts={}){
-    const {via,geometry,roadFollowed}=resolved;
-    if(roadFollowed&&geometry.length>1){
-      L.polyline(geometry,{color:'#fff',weight:11,opacity:.96,lineCap:'round',lineJoin:'round',interactive:false}).addTo(focusLayer);
-      L.polyline(geometry,{color,weight:6.5,opacity:1,lineCap:'round',lineJoin:'round'})
-        .bindTooltip(`${route.code} · ${route.corridor}`,{className:'ctg-route-tooltip',sticky:true})
-        .addTo(focusLayer);
-      addDirectionArrows(geometry,color);
+    const {waypoints,segments,roadFollowed}=resolved;
+
+    if(roadFollowed&&segments.length){
+      segments.forEach(segment=>{
+        L.polyline(segment.geometry,{color:'#fff',weight:11,opacity:.96,lineCap:'round',lineJoin:'round',interactive:false}).addTo(focusLayer);
+        segment.layer=L.polyline(segment.geometry,{color:segment.color,weight:6.5,opacity:1,lineCap:'round',lineJoin:'round'})
+          .bindTooltip(`${segment.from.name} → ${segment.to.name}`,{className:'ctg-route-tooltip',sticky:true})
+          .addTo(focusLayer);
+        addDirectionArrows(segment.geometry,segment.color);
+      });
     }
 
-    via.slice(1,-1).forEach(point=>L.marker(point,{icon:stopIcon(color),interactive:false,zIndexOffset:450}).addTo(focusLayer));
-
-    if(!opts.skipPins&&via.length){
-      L.marker(via[0],{icon:pinIcon('start','A'),zIndexOffset:900}).bindTooltip(opts.from||route.stops[0],{direction:'top',className:'ctg-route-tooltip'}).addTo(focusLayer);
-      L.marker(via.at(-1),{icon:pinIcon('end','B'),zIndexOffset:900}).bindTooltip(opts.to||route.stops.at(-1),{direction:'top',className:'ctg-route-tooltip'}).addTo(focusLayer);
+    if(!opts.skipPins){
+      waypoints.forEach((waypoint,index)=>{
+        const color=index===0?(segments[0]?.color||color):(segments[index-1]?.color||segments.at(-1)?.color||color);
+        L.marker(waypoint.coord,{icon:waypointIcon(index,color,waypoint.name),zIndexOffset:850+index})
+          .bindTooltip(waypoint.name,{direction:'top',className:'ctg-route-tooltip'})
+          .addTo(focusLayer);
+      });
     }
   }
 
-  function updateSheet({route=null,transfer='',title='',subtitle='',color='#7c4dff',loading=false}){
+  function renderWaypointStrip(resolved){
+    const strip=document.querySelector('.ctg-waypoint-strip');
+    if(!strip)return;
+    const waypoints=resolved?.waypoints||[];
+    if(waypoints.length<2){
+      strip.hidden=true;
+      strip.replaceChildren();
+      return;
+    }
+
+    strip.hidden=false;
+    strip.replaceChildren(...waypoints.map((waypoint,index)=>{
+      const button=document.createElement('button');
+      const color=index===0?(resolved.segments[0]?.color||'#2563eb'):(resolved.segments[index-1]?.color||resolved.segments.at(-1)?.color||'#2563eb');
+      button.type='button';
+      button.dataset.waypointIndex=String(index);
+      button.className='ctg-waypoint-chip';
+      button.style.setProperty('--waypoint-color',color);
+      const number=document.createElement('span');
+      number.textContent=String(index+1);
+      const label=document.createElement('strong');
+      label.textContent=waypoint.name;
+      button.append(number,label);
+      return button;
+    }));
+  }
+
+  function renderDirectionSwitch(route,resolved,allowDirection=true){
+    const wrapper=document.querySelector('.ctg-direction-switch');
+    if(!wrapper)return;
+    if(!route||!allowDirection){
+      wrapper.hidden=true;
+      return;
+    }
+    wrapper.hidden=false;
+    const current=resolved?.profile?.direction||'forward';
+    wrapper.querySelectorAll('button[data-direction]').forEach(button=>{
+      const active=button.dataset.direction===current;
+      button.classList.toggle('active',active);
+      button.setAttribute('aria-pressed',active?'true':'false');
+    });
+    const profile=resolved?.profile;
+    const note=wrapper.querySelector('.ctg-direction-note');
+    if(note){
+      note.textContent=current==='reverse'&&!profile?.verified
+        ? 'Return direction is an estimate until a direction-specific route is verified.'
+        : current==='reverse'
+          ? 'Direction-specific return path'
+          : 'Outbound path';
+    }
+  }
+
+
+  function updateSheet({route=null,transfer='',title='',subtitle='',color='#7c4dff',loading=false,resolved=null,allowDirection=true}){
     const card=document.querySelector('.map-card');
     if(!card)return;
     const summary=card.querySelector('.ctg-trip-summary');
@@ -412,7 +470,18 @@
     details.hidden=!route||loading;
     details.dataset.route=route?.id||'';
     setMapLoading(loading);
+
+    if(loading){
+      document.querySelector('.ctg-direction-switch')?.setAttribute('hidden','');
+      document.querySelector('.ctg-waypoint-strip')?.setAttribute('hidden','');
+    }else{
+      renderDirectionSwitch(route,resolved,allowDirection&&!transfer);
+      renderWaypointStrip(transfer?null:resolved);
+    }
+
+    updateLiveStatusUI();
   }
+
 
   function fitFocused(){
     if(!focusedBounds)return;
@@ -427,7 +496,7 @@
     });
   }
 
-  async function showRoute(id,{scroll=true,from='',to=''}={}){
+  async function showRoute(id,{scroll=true,from='',to='',direction=''}={}){
     const route=getRoutes().find(item=>item.id===id);
     if(!route||!map)return;
 
@@ -437,17 +506,21 @@
     focusedRouteId=id;
     focusedTransfer=null;
     focusedBounds=null;
+    highlightedSegmentIndex=-1;
+
+    const preview=routeWaypoints(route,{from,to,direction});
+    const previewTitle=`${route.code} · ${preview.profile.label}`;
 
     updateSheet({
       route,
-      title:`${route.code} · ${route.corridor}`,
-      subtitle:'Matching mapped stops to Cebu roads…',
+      title:previewTitle,
+      subtitle:'Matching named locations to Cebu roads…',
       color:colorFor(route.mode),
       loading:true
     });
     setGeometryLabel('Matching route to the road network…');
 
-    const resolved=await resolveRoutePath(route,{from,to});
+    const resolved=await resolveRoutePath(route,{from,to,direction});
     if(serial!==focusRequestSerial)return;
 
     focusLayer.clearLayers();
@@ -455,28 +528,41 @@
     if(resolved.geometry.length>1)focusedBounds=L.latLngBounds(resolved.geometry);
     else if(resolved.via.length)focusedBounds=L.latLngBounds(resolved.via);
 
+    activeRouteView={
+      route,
+      resolved,
+      direction:resolved.profile.direction,
+      from,
+      to
+    };
+
     const km=resolved.distance!=null?`${(resolved.distance/1000).toFixed(1)} km · `:'';
+    const directionLabel=resolved.profile.direction==='reverse'?'Return':'Outbound';
     if(resolved.roadFollowed){
-      setGeometryLabel('Road-following estimate via OpenStreetMap roads · actual PUV turns may vary');
+      setGeometryLabel('Color sections mark major locations · live GPS can compare your position with this road-following route');
       updateSheet({
         route,
-        title:`${route.code} · ${route.corridor}`,
-        subtitle:`${km}${resolved.via.length} mapped route points · road-following geometry`,
+        resolved,
+        title:`${route.code} · ${resolved.profile.label}`,
+        subtitle:`${directionLabel} · ${km}${resolved.waypoints.length} named locations · tap a colored location below`,
         color:colorFor(route.mode)
       });
     }else{
-      setGeometryLabel('Road routing unavailable right now · mapped stop points only');
+      setGeometryLabel('Road routing unavailable right now · mapped location pins only');
       updateSheet({
         route,
-        title:`${route.code} · ${route.corridor}`,
-        subtitle:'Road path unavailable right now. Showing mapped stops without a misleading straight-line route.',
+        resolved,
+        title:`${route.code} · ${resolved.profile.label}`,
+        subtitle:'Road path unavailable right now. Showing named location pins without a misleading straight line.',
         color:colorFor(route.mode)
       });
     }
 
+    if(lastLivePosition)updateLiveRouteStatus(lastLivePosition);
     if(focusedBounds)fitFocused();
     if(scroll)document.getElementById('map-section')?.scrollIntoView({behavior:'smooth',block:'start'});
   }
+
 
   async function showTransfer(aId,bId,common,{scroll=true,from='',to=''}={}){
     const a=getRoutes().find(item=>item.id===aId);
