@@ -1,4 +1,4 @@
-const CACHE='cebu-map-guide-v11';
+const CACHE='cebu-map-guide-v12';
 const ASSETS=['./','./manifest.json','./map-enhancer.css','./map-enhancer-pre.js','./map-enhancer.js'];
 
 self.addEventListener('install', event => {

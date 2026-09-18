@@ -35,7 +35,7 @@
   const directionProfiles={
     '04L':{
       forward:{label:'Lahug → Ayala → SM City Cebu',stops:['Lahug','Ayala','SM City Cebu'],verified:true},
-      reverse:{label:'SM City Cebu → Landers → Kasambagan → Lahug',stops:['SM City Cebu','Landers Superstore Cebu','Kasambagan','Lahug'],verified:true}
+      reverse:{label:'SM City Cebu → Landers → JY Square → Lahug',stops:['SM City Cebu','Landers Superstore Cebu','JY Square','Lahug'],verified:true}
     },
     '13C':{
       forward:{label:'Talamban → Country Mall → Ayala → Echavez → Colon',stops:['Talamban','Gaisano Country Mall','Ayala','Echavez','Colon'],verified:true},
@@ -81,12 +81,28 @@
   let expandTimer=null;
   let activeRouteView=null;
   let liveLayer=null;
+  let rerouteLayer=null;
   let liveWatchId=null;
   let liveMarker=null;
   let liveAccuracyCircle=null;
   let lastLivePosition=null;
   let followLiveLocation=true;
   let highlightedSegmentIndex=-1;
+  let rerouteState={
+    resolved:null,
+    baseWaypointIndex:1,
+    nextWaypointIndex:1,
+    offRouteSamples:0,
+    deviationStartedAt:0,
+    deviationStartCoord:null,
+    lastRerouteAt:0,
+    inFlight:false,
+    generation:0
+  };
+  const AUTO_REROUTE_OFF_SAMPLES=3;
+  const AUTO_REROUTE_COOLDOWN_MS=10000;
+  const AUTO_REROUTE_MIN_MOVE_METERS=35;
+  const AUTO_REROUTE_MAX_ACCURACY=85;
   let gpsSamples=[];
   let gpsWarmupStartedAt=0;
   let lastReliablePosition=null;
@@ -415,7 +431,7 @@
     const removable=[];
     map.eachLayer(layer=>{
       if(layer instanceof L.Polyline){
-        if(focusLayer?.hasLayer(layer)||liveLayer?.hasLayer(layer))return;
+        if(focusLayer?.hasLayer(layer)||liveLayer?.hasLayer(layer)||rerouteLayer?.hasLayer(layer))return;
         removable.push(layer);
       }
     });
@@ -579,13 +595,13 @@
     });
   }
 
-  function addDirectionArrows(geometry,color){
-    if(geometry.length<3)return;
+  function addDirectionArrows(geometry,color,targetLayer=focusLayer){
+    if(geometry.length<3||!targetLayer)return;
     const ratios=geometry.length<16?[.48]:[.22,.5,.78];
     ratios.forEach(ratio=>{
       const index=Math.min(geometry.length-2,Math.max(0,Math.floor((geometry.length-1)*ratio)));
       const a=geometry[index],b=geometry[index+1];
-      if(a&&b)L.marker(a,{icon:arrowIcon(color,bearing(a,b)),interactive:false,zIndexOffset:500}).addTo(focusLayer);
+      if(a&&b)L.marker(a,{icon:arrowIcon(color,bearing(a,b)),interactive:false,zIndexOffset:500}).addTo(targetLayer);
     });
   }
 
@@ -783,6 +799,7 @@
     if(!route||!map)return;
 
     const serial=++focusRequestSerial;
+    resetAutoReroute({restoreLegend:false});
     focusLayer.clearLayers();
     staticPolylineOpacity(true);
     focusedRouteId=id;
@@ -818,6 +835,7 @@
       from,
       to
     };
+    prepareAutoRerouteForActiveRoute();
 
     const km=resolved.distance!=null?`${(resolved.distance/1000).toFixed(1)} km · `:'';
     const directionLabel=resolved.profile.direction==='reverse'?'Return':'Outbound';
@@ -853,6 +871,7 @@
     if(!a||!b||!map)return;
 
     const serial=++focusRequestSerial;
+    resetAutoReroute({restoreLegend:false});
     focusLayer.clearLayers();
     staticPolylineOpacity(true);
     focusedRouteId=null;
@@ -962,9 +981,272 @@
     button.setAttribute('aria-pressed',followLiveLocation?'true':'false');
   }
 
+  function effectiveLiveResolved(){
+    return rerouteState.resolved||activeRouteView?.resolved||null;
+  }
+
+  function restoreOriginalRouteStyles(){
+    activeRouteView?.resolved?.segments?.forEach(segment=>{
+      if(segment.layer)segment.layer.setStyle({weight:6.5,opacity:1});
+    });
+  }
+
+  function resetAutoReroute({restoreLegend=true}={}){
+    rerouteState.generation+=1;
+    rerouteState.resolved=null;
+    rerouteState.baseWaypointIndex=1;
+    rerouteState.nextWaypointIndex=1;
+    rerouteState.offRouteSamples=0;
+    rerouteState.deviationStartedAt=0;
+    rerouteState.deviationStartCoord=null;
+    rerouteState.lastRerouteAt=0;
+    rerouteState.inFlight=false;
+    rerouteLayer?.clearLayers();
+    restoreOriginalRouteStyles();
+    if(restoreLegend&&activeRouteView?.route&&activeRouteView?.resolved){
+      renderMapLegendRouteSections(activeRouteView.route,activeRouteView.resolved);
+    }
+  }
+
+  function prepareAutoRerouteForActiveRoute(){
+    resetAutoReroute({restoreLegend:false});
+    const count=activeRouteView?.resolved?.waypoints?.length||0;
+    rerouteState.nextWaypointIndex=count>1?1:0;
+  }
+
+  function bestSegmentForPoint(point,resolved){
+    let best={distance:Infinity,index:-1,segment:null};
+    resolved?.segments?.forEach((segment,index)=>{
+      const distance=geometryDistanceMeters(point,segment.geometry);
+      if(distance<best.distance)best={distance,index,segment};
+    });
+    return best;
+  }
+
+  function updateNextWaypointProgress(point,best){
+    const original=activeRouteView?.resolved;
+    const waypoints=original?.waypoints||[];
+    if(waypoints.length<2)return;
+
+    if(best?.index>=0){
+      const mappedNext=rerouteState.resolved
+        ?rerouteState.baseWaypointIndex+best.index
+        :best.index+1;
+      rerouteState.nextWaypointIndex=Math.max(
+        rerouteState.nextWaypointIndex,
+        Math.min(waypoints.length-1,mappedNext)
+      );
+    }
+
+    const proximity=Math.max(90,Math.min(180,(lastReliablePosition?.accuracy||40)*1.6));
+    while(
+      rerouteState.nextWaypointIndex<waypoints.length-1&&
+      haversineMeters(point,waypoints[rerouteState.nextWaypointIndex].coord)<=proximity
+    ){
+      rerouteState.nextWaypointIndex+=1;
+    }
+  }
+
+  function drawLiveReroute(resolved){
+    if(!rerouteLayer)return;
+    rerouteLayer.clearLayers();
+
+    // Keep the initially predicted route visible as context, but de-emphasize it.
+    activeRouteView?.resolved?.segments?.forEach(segment=>{
+      if(segment.layer)segment.layer.setStyle({weight:4,opacity:.2});
+    });
+
+    resolved.segments.forEach(segment=>{
+      L.polyline(segment.geometry,{
+        color:'#ffffff',
+        weight:13,
+        opacity:.96,
+        lineCap:'round',
+        lineJoin:'round',
+        interactive:false
+      }).addTo(rerouteLayer);
+
+      L.polyline(segment.geometry,{
+        color:'#f59e0b',
+        weight:10,
+        opacity:.72,
+        lineCap:'round',
+        lineJoin:'round',
+        interactive:false
+      }).addTo(rerouteLayer);
+
+      segment.layer=L.polyline(segment.geometry,{
+        color:segment.color,
+        weight:6.5,
+        opacity:1,
+        lineCap:'round',
+        lineJoin:'round'
+      }).bindTooltip(
+        `Rerouted · ${segment.from.name} → ${segment.to.name}`,
+        {className:'ctg-route-tooltip',sticky:true}
+      ).addTo(rerouteLayer);
+
+      addDirectionArrows(segment.geometry,segment.color,rerouteLayer);
+    });
+
+    const first=resolved.geometry?.[0];
+    if(first){
+      L.marker(first,{
+        icon:L.divIcon({
+          className:'',
+          html:'<div class="ctg-reroute-badge">REROUTED</div>',
+          iconSize:[76,24],
+          iconAnchor:[38,28]
+        }),
+        interactive:false,
+        zIndexOffset:1080
+      }).addTo(rerouteLayer);
+    }
+  }
+
+  async function autoRerouteFrom(position){
+    if(rerouteState.inFlight||!activeRouteView?.route||!activeRouteView?.resolved?.roadFollowed)return;
+
+    const original=activeRouteView.resolved;
+    const originalWaypoints=original.waypoints||[];
+    if(originalWaypoints.length<2)return;
+
+    const point=[position.lat,position.lng];
+    updateNextWaypointProgress(point,bestSegmentForPoint(point,effectiveLiveResolved()));
+
+    let nextIndex=Math.max(1,Math.min(
+      rerouteState.nextWaypointIndex,
+      originalWaypoints.length-1
+    ));
+
+    // If the vehicle has clearly reached the next named location, advance before routing.
+    const proximity=Math.max(90,Math.min(180,(position.accuracy||40)*1.6));
+    while(
+      nextIndex<originalWaypoints.length-1&&
+      haversineMeters(point,originalWaypoints[nextIndex].coord)<=proximity
+    ){
+      nextIndex+=1;
+    }
+
+    const remaining=originalWaypoints.slice(nextIndex);
+    if(!remaining.length)return;
+
+    const requestGeneration=++rerouteState.generation;
+    const routeId=activeRouteView.route.id;
+    const direction=activeRouteView.direction;
+    rerouteState.inFlight=true;
+    setLiveMessage(
+      'Adjusting route…',
+      `Driver left the predicted road. Rebuilding from your current position toward ${remaining[0].name}.`,
+      'near'
+    );
+
+    try{
+      const via=[point,...remaining.map(item=>item.coord)];
+      const road=await fetchRoadGeometry(via);
+      if(
+        requestGeneration!==rerouteState.generation||
+        !activeRouteView||
+        activeRouteView.route.id!==routeId||
+        activeRouteView.direction!==direction
+      )return;
+
+      if(!road.roadFollowed||road.geometry.length<2){
+        setLiveMessage(
+          'Reroute unavailable',
+          'The road router could not rebuild the remaining path yet. Tracking will keep watching and try again after the vehicle moves farther.',
+          'off'
+        );
+        return;
+      }
+
+      const dynamicWaypoints=[
+        {name:'Current position',coord:point},
+        ...remaining.map(item=>({name:item.name,coord:item.coord}))
+      ];
+      const colorKey=`${routeId}|${activeRouteView.route.code}|${direction}|live-reroute-${requestGeneration}`;
+      const segments=splitGeometryByWaypoints(
+        road.geometry,
+        dynamicWaypoints,
+        colorKey
+      );
+      const resolved={
+        ...original,
+        waypoints:dynamicWaypoints,
+        via,
+        geometry:road.geometry,
+        segments,
+        distance:road.distance,
+        roadFollowed:true,
+        liveReroute:true,
+        profile:original.profile
+      };
+
+      rerouteState.resolved=resolved;
+      rerouteState.baseWaypointIndex=nextIndex;
+      rerouteState.nextWaypointIndex=nextIndex;
+      rerouteState.lastRerouteAt=Date.now();
+      rerouteState.offRouteSamples=0;
+      rerouteState.deviationStartedAt=0;
+      rerouteState.deviationStartCoord=null;
+
+      drawLiveReroute(resolved);
+      renderMapLegendRouteSections(activeRouteView.route,resolved);
+      setGeometryLabel('Live reroute active · the remaining track will adjust again if the vehicle leaves this path');
+      setLiveMessage(
+        'Route adjusted',
+        `New live track follows your current road toward ${remaining[0].name}. It will recalculate again if the driver deviates.`,
+        'on'
+      );
+    }finally{
+      if(requestGeneration===rerouteState.generation)rerouteState.inFlight=false;
+    }
+  }
+
+  function maybeAutoReroute(position,state,best){
+    if(!activeRouteView?.resolved?.roadFollowed||liveWatchId===null)return;
+
+    const accuracy=Number.isFinite(position.accuracy)?position.accuracy:Infinity;
+    const now=Date.now();
+
+    if(state!=='off'||accuracy>AUTO_REROUTE_MAX_ACCURACY){
+      if(state==='on'){
+        rerouteState.offRouteSamples=0;
+        rerouteState.deviationStartedAt=0;
+        rerouteState.deviationStartCoord=null;
+      }else if(state==='near'){
+        rerouteState.offRouteSamples=Math.max(0,rerouteState.offRouteSamples-1);
+      }
+      return;
+    }
+
+    const point=[position.lat,position.lng];
+    if(!rerouteState.deviationStartedAt){
+      rerouteState.deviationStartedAt=now;
+      rerouteState.deviationStartCoord=point;
+    }
+    rerouteState.offRouteSamples+=1;
+
+    const moved=rerouteState.deviationStartCoord
+      ?haversineMeters(rerouteState.deviationStartCoord,point)
+      :0;
+    const persisted=now-rerouteState.deviationStartedAt>=6500;
+    const cooledDown=now-rerouteState.lastRerouteAt>=AUTO_REROUTE_COOLDOWN_MS;
+
+    if(
+      rerouteState.offRouteSamples>=AUTO_REROUTE_OFF_SAMPLES&&
+      (moved>=AUTO_REROUTE_MIN_MOVE_METERS||persisted)&&
+      cooledDown&&
+      !rerouteState.inFlight
+    ){
+      autoRerouteFrom(position);
+    }
+  }
+
   function highlightActiveSegment(index){
-    if(!activeRouteView?.resolved?.segments)return;
-    activeRouteView.resolved.segments.forEach((segment,segmentIndex)=>{
+    const resolved=effectiveLiveResolved();
+    if(!resolved?.segments)return;
+    resolved.segments.forEach((segment,segmentIndex)=>{
       if(!segment.layer)return;
       const active=segmentIndex===index;
       const hasActive=index>=0;
@@ -974,45 +1256,49 @@
     highlightedSegmentIndex=index;
     updateMapLegendCurrentSegment(index);
 
+    const mappedWaypointIndex=rerouteState.resolved
+      ?rerouteState.baseWaypointIndex+Math.max(0,index)
+      :Math.max(0,index+1);
     document.querySelectorAll('.ctg-waypoint-chip').forEach((chip,chipIndex)=>{
-      chip.classList.toggle('current',index>=0&&(chipIndex===index||chipIndex===index+1));
+      chip.classList.toggle('current',index>=0&&chipIndex===mappedWaypointIndex);
     });
   }
 
   function updateLiveRouteStatus(position){
     if(!position||liveWatchId===null)return;
-    if(!activeRouteView?.resolved?.roadFollowed||!activeRouteView.resolved.segments.length){
+    const resolved=effectiveLiveResolved();
+    if(!resolved?.roadFollowed||!resolved.segments.length){
       highlightActiveSegment(-1);
       setLiveMessage('Live location active','Select a road-following route to compare your movement. Location stays in this browser and is not stored.','tracking');
       return;
     }
 
     const point=[position.lat,position.lng];
-    let best={distance:Infinity,index:-1,segment:null};
-    activeRouteView.resolved.segments.forEach((segment,index)=>{
-      const distance=geometryDistanceMeters(point,segment.geometry);
-      if(distance<best.distance)best={distance,index,segment};
-    });
+    const best=bestSegmentForPoint(point,resolved);
 
     const accuracy=Number.isFinite(position.accuracy)?position.accuracy:30;
     const onRouteThreshold=Math.max(45,Math.min(120,accuracy*1.5));
     const nearRouteThreshold=onRouteThreshold+120;
     const state=best.distance<=onRouteThreshold?'on':best.distance<=nearRouteThreshold?'near':'off';
 
+    if(state!=='off')updateNextWaypointProgress(point,best);
     highlightActiveSegment(state==='off'?-1:best.index);
 
     const nextDistance=best.segment?haversineMeters(point,best.segment.to.coord):null;
     const section=best.segment?`${best.segment.from.name} → ${best.segment.to.name}`:'Selected route';
     const next=best.segment?`Next: ${best.segment.to.name} ${formatDistance(nextDistance)}`:'';
     const accuracyText=`GPS ±${Math.round(accuracy)} m`;
+    const rerouteLabel=rerouteState.resolved?' · live reroute':'';
 
     if(state==='on'){
-      setLiveMessage('On selected route',`${section} · ${next} · ${accuracyText}`,'on');
+      setLiveMessage('On selected route',`${section} · ${next} · ${accuracyText}${rerouteLabel}`,'on');
     }else if(state==='near'){
-      setLiveMessage('Near selected route',`${Math.round(best.distance)} m from route · ${section} · ${accuracyText}`,'near');
+      setLiveMessage('Near selected route',`${Math.round(best.distance)} m from route · ${section} · ${accuracyText}${rerouteLabel}`,'near');
     }else{
-      setLiveMessage('Off selected route',`${Math.round(best.distance)} m from the mapped route · ${accuracyText}`,'off');
+      setLiveMessage('Off selected route',`${Math.round(best.distance)} m from the current track · ${accuracyText} · watching for a confirmed deviation`,'off');
     }
+
+    maybeAutoReroute(position,state,best);
   }
 
   function updateLiveStatusUI(){
@@ -1210,6 +1496,7 @@
     liveLayer?.clearLayers();
     liveMarker=null;
     liveAccuracyCircle=null;
+    resetAutoReroute({restoreLegend:true});
     highlightActiveSegment(-1);
 
     const row=document.querySelector('.ctg-live-status');
@@ -1231,6 +1518,7 @@
 
   function clearFocus(){
     ++focusRequestSerial;
+    resetAutoReroute({restoreLegend:false});
     focusLayer.clearLayers();
     staticPolylineOpacity(false);
     focusedBounds=null;
@@ -2024,6 +2312,7 @@
   async function showSpatialDirect(itinerary,plan,{scroll=true}={}){
     const route=itinerary.entry.route;
     const serial=++focusRequestSerial;
+    resetAutoReroute({restoreLegend:false});
     focusLayer.clearLayers();
     staticPolylineOpacity(true);
     focusedRouteId=route.id;
@@ -2058,6 +2347,7 @@
     const boundsPoints=[...rideSlice,plan.origin.coord,plan.destination.coord];
     focusedBounds=L.latLngBounds(boundsPoints);
     activeRouteView={route,resolved,direction:itinerary.entry.direction,from:plan.origin.label,to:plan.destination.label};
+    prepareAutoRerouteForActiveRoute();
 
     updateSheet({
       route,
@@ -2073,6 +2363,7 @@
 
   async function showSpatialTransfer(itinerary,plan,{scroll=true}={}){
     const serial=++focusRequestSerial;
+    resetAutoReroute({restoreLegend:false});
     focusLayer.clearLayers();
     staticPolylineOpacity(true);
     focusedRouteId=null;
@@ -2338,6 +2629,7 @@
     catalog=coordCatalog();
     focusLayer=L.layerGroup().addTo(map);
     liveLayer=L.layerGroup().addTo(map);
+    rerouteLayer=L.layerGroup().addTo(map);
     removeLegacyOverviewPolylines();
     L.control.scale({metric:true,imperial:false,maxWidth:110,position:'bottomleft'}).addTo(map);
     createMapChrome();
