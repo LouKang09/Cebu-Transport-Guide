@@ -619,6 +619,214 @@
     if(scroll)document.getElementById('map-section')?.scrollIntoView({behavior:'smooth',block:'start'});
   }
 
+  const toRadians=value=>value*Math.PI/180;
+
+  function haversineMeters(a,b){
+    const R=6371000;
+    const dLat=toRadians(b[0]-a[0]);
+    const dLng=toRadians(b[1]-a[1]);
+    const lat1=toRadians(a[0]);
+    const lat2=toRadians(b[0]);
+    const h=Math.sin(dLat/2)**2+Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLng/2)**2;
+    return 2*R*Math.atan2(Math.sqrt(h),Math.sqrt(Math.max(0,1-h)));
+  }
+
+  function pointToSegmentMeters(point,a,b){
+    const refLat=toRadians(point[0]);
+    const metersPerLat=111320;
+    const metersPerLng=111320*Math.cos(refLat);
+    const px=(point[1]-a[1])*metersPerLng;
+    const py=(point[0]-a[0])*metersPerLat;
+    const bx=(b[1]-a[1])*metersPerLng;
+    const by=(b[0]-a[0])*metersPerLat;
+    const lengthSquared=bx*bx+by*by;
+    if(lengthSquared===0)return Math.hypot(px,py);
+    const t=Math.max(0,Math.min(1,(px*bx+py*by)/lengthSquared));
+    return Math.hypot(px-t*bx,py-t*by);
+  }
+
+  function geometryDistanceMeters(point,geometry){
+    let best=Infinity;
+    for(let i=0;i<geometry.length-1;i++){
+      best=Math.min(best,pointToSegmentMeters(point,geometry[i],geometry[i+1]));
+    }
+    return best;
+  }
+
+  function formatDistance(meters){
+    if(!Number.isFinite(meters))return'';
+    if(meters<1000)return`~${Math.max(10,Math.round(meters/10)*10)} m`;
+    return`~${(meters/1000).toFixed(1)} km`;
+  }
+
+  function setLiveMessage(title,meta,state='tracking'){
+    const row=document.querySelector('.ctg-live-status');
+    if(!row||liveWatchId===null)return;
+    row.hidden=false;
+    row.dataset.state=state;
+    row.querySelector('.ctg-live-copy strong').textContent=title;
+    row.querySelector('.ctg-live-copy small').textContent=meta;
+    if(liveMarker)liveMarker.setIcon(liveLocationIcon(state));
+  }
+
+  function updateLiveFollowButton(){
+    const button=document.querySelector('.ctg-live-follow');
+    if(!button)return;
+    button.textContent=followLiveLocation?'Following':'Follow';
+    button.classList.toggle('active',followLiveLocation);
+    button.setAttribute('aria-pressed',followLiveLocation?'true':'false');
+  }
+
+  function highlightActiveSegment(index){
+    if(!activeRouteView?.resolved?.segments)return;
+    activeRouteView.resolved.segments.forEach((segment,segmentIndex)=>{
+      if(!segment.layer)return;
+      const active=segmentIndex===index;
+      segment.layer.setStyle({weight:active?9.5:6.5,opacity:active?1:.76});
+      if(active)segment.layer.bringToFront();
+    });
+    highlightedSegmentIndex=index;
+
+    document.querySelectorAll('.ctg-waypoint-chip').forEach((chip,chipIndex)=>{
+      chip.classList.toggle('current',index>=0&&(chipIndex===index||chipIndex===index+1));
+    });
+  }
+
+  function updateLiveRouteStatus(position){
+    if(!position||liveWatchId===null)return;
+    if(!activeRouteView?.resolved?.roadFollowed||!activeRouteView.resolved.segments.length){
+      highlightActiveSegment(-1);
+      setLiveMessage('Live location active','Select a road-following route to compare your movement. Location stays in this browser and is not stored.','tracking');
+      return;
+    }
+
+    const point=[position.lat,position.lng];
+    let best={distance:Infinity,index:-1,segment:null};
+    activeRouteView.resolved.segments.forEach((segment,index)=>{
+      const distance=geometryDistanceMeters(point,segment.geometry);
+      if(distance<best.distance)best={distance,index,segment};
+    });
+
+    const accuracy=Number.isFinite(position.accuracy)?position.accuracy:30;
+    const onRouteThreshold=Math.max(45,Math.min(120,accuracy*1.5));
+    const nearRouteThreshold=onRouteThreshold+120;
+    const state=best.distance<=onRouteThreshold?'on':best.distance<=nearRouteThreshold?'near':'off';
+
+    highlightActiveSegment(state==='off'?-1:best.index);
+
+    const nextDistance=best.segment?haversineMeters(point,best.segment.to.coord):null;
+    const section=best.segment?`${best.segment.from.name} → ${best.segment.to.name}`:'Selected route';
+    const next=best.segment?`Next: ${best.segment.to.name} ${formatDistance(nextDistance)}`:'';
+    const accuracyText=`GPS ±${Math.round(accuracy)} m`;
+
+    if(state==='on'){
+      setLiveMessage('On selected route',`${section} · ${next} · ${accuracyText}`,'on');
+    }else if(state==='near'){
+      setLiveMessage('Near selected route',`${Math.round(best.distance)} m from route · ${section} · ${accuracyText}`,'near');
+    }else{
+      setLiveMessage('Off selected route',`${Math.round(best.distance)} m from the mapped route · ${accuracyText}`,'off');
+    }
+  }
+
+  function updateLiveStatusUI(){
+    const row=document.querySelector('.ctg-live-status');
+    const button=document.querySelector('.ctg-location');
+    if(button){
+      const active=liveWatchId!==null;
+      button.classList.toggle('active',active);
+      button.setAttribute('aria-pressed',active?'true':'false');
+      button.title=active?'Stop sharing live location':'Share live location';
+      button.setAttribute('aria-label',active?'Stop sharing live location':'Share live location');
+    }
+    if(!row)return;
+    if(liveWatchId===null){
+      row.hidden=true;
+      return;
+    }
+    row.hidden=false;
+    updateLiveFollowButton();
+    if(lastLivePosition)updateLiveRouteStatus(lastLivePosition);
+    else setLiveMessage('Getting your location','Allow location access when your browser asks. Your position is not stored by this site.','tracking');
+  }
+
+  function handleLivePosition(geoPosition){
+    const {latitude,longitude,accuracy}=geoPosition.coords;
+    const next={lat:latitude,lng:longitude,accuracy,timestamp:geoPosition.timestamp};
+    lastLivePosition=next;
+
+    if(!liveMarker){
+      liveMarker=L.marker([latitude,longitude],{icon:liveLocationIcon('tracking'),zIndexOffset:1200}).addTo(liveLayer);
+      liveAccuracyCircle=L.circle([latitude,longitude],{
+        radius:Math.max(accuracy,5),
+        color:'#2563eb',
+        weight:1,
+        opacity:.45,
+        fillColor:'#2563eb',
+        fillOpacity:.08,
+        interactive:false
+      }).addTo(liveLayer);
+    }else{
+      liveMarker.setLatLng([latitude,longitude]);
+      liveAccuracyCircle?.setLatLng([latitude,longitude]).setRadius(Math.max(accuracy,5));
+    }
+
+    if(followLiveLocation)map.panTo([latitude,longitude],{animate:true,duration:.35});
+    updateLiveRouteStatus(next);
+  }
+
+  function handleLiveError(error){
+    const message=error?.code===1
+      ?'Location permission was denied. Enable location permission in your browser to use live tracking.'
+      :error?.code===2
+        ?'Your device could not determine a location right now.'
+        :'Location timed out. Move somewhere with a clearer GPS signal and try again.';
+    setLiveMessage('Live location unavailable',message,'off');
+    stopLiveLocation({keepMessage:true});
+  }
+
+  function startLiveLocation(){
+    if(liveWatchId!==null)return;
+    if(!navigator.geolocation){
+      window.alert('This browser does not support live location.');
+      return;
+    }
+    followLiveLocation=true;
+    liveWatchId=navigator.geolocation.watchPosition(handleLivePosition,handleLiveError,{
+      enableHighAccuracy:true,
+      maximumAge:3000,
+      timeout:15000
+    });
+    updateLiveStatusUI();
+  }
+
+  function stopLiveLocation(options={}){
+    if(liveWatchId!==null&&navigator.geolocation)navigator.geolocation.clearWatch(liveWatchId);
+    liveWatchId=null;
+    lastLivePosition=null;
+    followLiveLocation=false;
+    highlightedSegmentIndex=-1;
+    liveLayer?.clearLayers();
+    liveMarker=null;
+    liveAccuracyCircle=null;
+    highlightActiveSegment(-1);
+
+    const row=document.querySelector('.ctg-live-status');
+    if(row&&!options.keepMessage)row.hidden=true;
+    const button=document.querySelector('.ctg-location');
+    if(button){
+      button.classList.remove('active');
+      button.setAttribute('aria-pressed','false');
+      button.title='Share live location';
+      button.setAttribute('aria-label','Share live location');
+    }
+    updateLiveFollowButton();
+  }
+
+  function toggleLiveLocation(){
+    if(liveWatchId!==null)stopLiveLocation();
+    else startLiveLocation();
+  }
+
   function clearFocus(){
     ++focusRequestSerial;
     focusLayer.clearLayers();
@@ -626,6 +834,8 @@
     focusedBounds=null;
     focusedRouteId=null;
     focusedTransfer=null;
+    activeRouteView=null;
+    highlightedSegmentIndex=-1;
     setMapLoading(false);
     setGeometryLabel('Road-following estimate from mapped route points');
     const card=document.querySelector('.map-card');
@@ -633,6 +843,8 @@
     card.querySelector('.ctg-trip-summary').hidden=true;
     card.querySelector('.ctg-nav-sheet').hidden=true;
     card.querySelector('.ctg-fit-route').hidden=true;
+    card.querySelector('.ctg-direction-switch').hidden=true;
+    card.querySelector('.ctg-waypoint-strip').hidden=true;
   }
 
   function resetOverview(){
@@ -834,8 +1046,15 @@
     if(!map||!window.L)return;
     catalog=coordCatalog();
     focusLayer=L.layerGroup().addTo(map);
+    liveLayer=L.layerGroup().addTo(map);
     L.control.scale({metric:true,imperial:false,maxWidth:110,position:'bottomleft'}).addTo(map);
     createMapChrome();
+    map.on('dragstart',()=>{
+      if(liveWatchId!==null){
+        followLiveLocation=false;
+        updateLiveFollowButton();
+      }
+    });
     observeDynamicUI();
     setTimeout(()=>map.invalidateSize(),100);
   }
