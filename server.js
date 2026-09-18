@@ -47,6 +47,14 @@ function buildIndex() {
 
 const indexHtml = buildIndex();
 
+// Load small static enhancer assets once at startup. Requests are served from
+// memory, avoiding request-triggered filesystem work.
+const enhancerAssets = new Map([
+  ['/map-enhancer.css', { type: 'text/css; charset=utf-8', body: fs.readFileSync(path.join(__dirname, 'map-enhancer.css'), 'utf8') }],
+  ['/map-enhancer-pre.js', { type: 'application/javascript; charset=utf-8', body: fs.readFileSync(path.join(__dirname, 'map-enhancer-pre.js'), 'utf8') }],
+  ['/map-enhancer.js', { type: 'application/javascript; charset=utf-8', body: fs.readFileSync(path.join(__dirname, 'map-enhancer.js'), 'utf8') }]
+]);
+
 app.get('/health', (_req, res) => {
   res.status(200).json({ status: 'ok', service: 'cebu-transport-guide' });
 });
@@ -60,12 +68,12 @@ app.get('/sw.js', (_req, res) => {
   res.sendFile(path.join(__dirname, 'sw.js'));
 });
 
-for (const asset of ['map-enhancer.css', 'map-enhancer-pre.js', 'map-enhancer.js']) {
-  app.get(`/${asset}`, (_req, res) => {
-    res.setHeader('Cache-Control', 'public, max-age=300');
-    res.sendFile(path.join(__dirname, asset));
-  });
-}
+app.get(['/map-enhancer.css', '/map-enhancer-pre.js', '/map-enhancer.js'], (req, res) => {
+  const asset = enhancerAssets.get(req.path);
+  if (!asset) return res.sendStatus(404);
+  res.setHeader('Cache-Control', 'public, max-age=300');
+  res.type(asset.type).send(asset.body);
+});
 
 app.get('*', (_req, res) => {
   res.setHeader('Cache-Control', 'public, max-age=300');
