@@ -256,19 +256,55 @@
     return(Math.atan2(y,x)*180/Math.PI+360)%360;
   };
 
-  const pinIcon=(kind,label)=>L.divIcon({className:'',html:`<div class="ctg-nav-pin ${kind}"><span>${label}</span></div>`,iconSize:[34,34],iconAnchor:[10,31]});
+  const escapeHtml=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  const pinIcon=(kind,label)=>L.divIcon({className:'',html:`<div class="ctg-nav-pin ${kind}"><span>${escapeHtml(label)}</span></div>`,iconSize:[34,34],iconAnchor:[10,31]});
   const stopIcon=color=>L.divIcon({className:'',html:`<span class="ctg-route-stop" style="--route-color:${color}"></span>`,iconSize:[13,13],iconAnchor:[6.5,6.5]});
   const arrowIcon=(color,angle)=>L.divIcon({className:'',html:`<span class="ctg-direction-arrow" style="--route-color:${color};transform:rotate(${angle}deg)">➜</span>`,iconSize:[28,28],iconAnchor:[14,14]});
+  const waypointIcon=(index,color,name)=>L.divIcon({
+    className:'',
+    html:`<div class="ctg-waypoint-wrap"><span class="ctg-waypoint-pin" style="--waypoint-color:${color}">${index+1}</span><span class="ctg-waypoint-map-label">${escapeHtml(name)}</span></div>`,
+    iconSize:[118,42],
+    iconAnchor:[18,20]
+  });
+  const liveLocationIcon=status=>L.divIcon({
+    className:'',
+    html:`<div class="ctg-live-marker ${status||'tracking'}"><span></span></div>`,
+    iconSize:[28,28],
+    iconAnchor:[14,14]
+  });
 
   function createMapChrome(){
     const card=document.querySelector('.map-card');
     if(!card||card.querySelector('.ctg-map-controls'))return;
     card.insertAdjacentHTML('beforeend',`
       <div class="ctg-map-top" aria-live="polite"><div class="ctg-trip-summary" hidden><span class="ctg-trip-dot"></span><span class="ctg-trip-copy"><small class="ctg-trip-eyebrow">Selected route</small><strong class="ctg-trip-title">Route</strong></span><span class="ctg-route-loading" hidden aria-hidden="true"></span><button class="ctg-map-close" type="button" aria-label="Clear selected route">×</button></div></div>
-      <div class="ctg-map-controls" aria-label="Map controls"><button class="ctg-map-fab ctg-zoom-in" type="button" aria-label="Zoom in">+</button><button class="ctg-map-fab ctg-zoom-out" type="button" aria-label="Zoom out">−</button><button class="ctg-map-fab ctg-fit-route" type="button" aria-label="Fit selected route" title="Fit selected route" hidden>⌗</button><button class="ctg-map-fab ctg-overview" type="button" aria-label="Show Metro Cebu overview" title="Cebu overview">◎</button></div>
-      <div class="ctg-nav-sheet" hidden><div class="ctg-sheet-handle" aria-hidden="true"></div><div class="ctg-sheet-row"><span class="ctg-sheet-badge">17B</span><div class="ctg-sheet-copy"><span class="ctg-sheet-mode">Jeepney</span><strong class="ctg-sheet-title">IT Park → Carbon</strong><small class="ctg-sheet-meta">Following mapped roads…</small></div></div><div class="ctg-sheet-actions"><button class="ghost-btn compact ctg-sheet-details" type="button">Route details</button><button class="primary-btn compact ctg-sheet-fit" type="button">Fit route</button></div></div>
+      <div class="ctg-map-controls" aria-label="Map controls">
+        <button class="ctg-map-fab ctg-location" type="button" aria-label="Share live location" title="Share live location">⌖</button>
+        <button class="ctg-map-fab ctg-zoom-in" type="button" aria-label="Zoom in">+</button>
+        <button class="ctg-map-fab ctg-zoom-out" type="button" aria-label="Zoom out">−</button>
+        <button class="ctg-map-fab ctg-fit-route" type="button" aria-label="Fit selected route" title="Fit selected route" hidden>⌗</button>
+        <button class="ctg-map-fab ctg-overview" type="button" aria-label="Show Metro Cebu overview" title="Cebu overview">◎</button>
+      </div>
+      <div class="ctg-nav-sheet" hidden>
+        <div class="ctg-sheet-handle" aria-hidden="true"></div>
+        <div class="ctg-sheet-row"><span class="ctg-sheet-badge">17B</span><div class="ctg-sheet-copy"><span class="ctg-sheet-mode">Jeepney</span><strong class="ctg-sheet-title">IT Park → Carbon</strong><small class="ctg-sheet-meta">Following mapped roads…</small></div></div>
+        <div class="ctg-direction-switch" hidden aria-label="Route direction">
+          <button type="button" data-direction="forward">Outbound</button>
+          <button type="button" data-direction="reverse">Return</button>
+          <small class="ctg-direction-note"></small>
+        </div>
+        <div class="ctg-waypoint-strip" hidden aria-label="Major locations on this route"></div>
+        <div class="ctg-live-status" hidden aria-live="polite">
+          <span class="ctg-live-dot"></span>
+          <div class="ctg-live-copy"><strong>Live location</strong><small>Waiting for GPS…</small></div>
+          <button class="ctg-live-follow" type="button">Follow</button>
+          <button class="ctg-live-stop" type="button">Stop</button>
+        </div>
+        <div class="ctg-sheet-actions"><button class="ghost-btn compact ctg-sheet-details" type="button">Route details</button><button class="primary-btn compact ctg-sheet-fit" type="button">Fit route</button></div>
+      </div>
       <div class="ctg-schematic-label">Road-following estimate from mapped route points</div>`);
 
+    card.querySelector('.ctg-location').addEventListener('click',toggleLiveLocation);
     card.querySelector('.ctg-zoom-in').addEventListener('click',()=>map.zoomIn(.5));
     card.querySelector('.ctg-zoom-out').addEventListener('click',()=>map.zoomOut(.5));
     card.querySelector('.ctg-fit-route').addEventListener('click',fitFocused);
@@ -277,13 +313,34 @@
     card.querySelector('.ctg-map-close').addEventListener('click',clearFocus);
     card.querySelector('.ctg-sheet-details').addEventListener('click',event=>{const id=event.currentTarget.dataset.route;if(id)openExistingRouteDialog(id);});
 
+    card.querySelector('.ctg-direction-switch').addEventListener('click',event=>{
+      const button=event.target.closest('button[data-direction]');
+      if(!button||!activeRouteView?.route)return;
+      showRoute(activeRouteView.route.id,{scroll:false,direction:button.dataset.direction});
+    });
+
+    card.querySelector('.ctg-waypoint-strip').addEventListener('click',event=>{
+      const button=event.target.closest('button[data-waypoint-index]');
+      const index=Number(button?.dataset.waypointIndex);
+      const waypoint=activeRouteView?.resolved?.waypoints?.[index];
+      if(!waypoint)return;
+      map.flyTo(waypoint.coord,Math.max(map.getZoom(),15.5),{duration:.55});
+    });
+
+    card.querySelector('.ctg-live-follow').addEventListener('click',()=>{
+      followLiveLocation=true;
+      if(lastLivePosition)map.flyTo([lastLivePosition.lat,lastLivePosition.lng],Math.max(map.getZoom(),16),{duration:.5});
+      updateLiveFollowButton();
+    });
+    card.querySelector('.ctg-live-stop').addEventListener('click',stopLiveLocation);
+
     const reset=document.getElementById('fitMapBtn');
     if(reset){
       reset.textContent='Cebu overview';
       reset.addEventListener('click',()=>setTimeout(resetOverview,0));
     }
     const panelText=document.querySelector('.map-panel > p');
-    if(panelText)panelText.textContent='Tap Map on a route or planner result. Selected routes follow the mapped road network instead of straight point-to-point lines.';
+    if(panelText)panelText.textContent='Tap Map on a route to see color-coded major locations, switch outbound/return direction, or opt in to live GPS route tracking.';
   }
 
   function setGeometryLabel(text){
