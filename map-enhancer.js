@@ -92,6 +92,17 @@
   const GPS_MAX_ACCEPTABLE_ACCURACY=140;
   const GPS_SAMPLE_WINDOW_MS=12000;
   const GPS_MAX_JUMP_SPEED_MPS=55;
+  const PLACE_SEARCH_URL='https://photon.komoot.io/api/';
+  const CEBU_SEARCH_BBOX='123.2,9.2,124.4,11.6';
+  const geocodeCache=new Map();
+  const geocodeControllers=new WeakMap();
+  let spatialRouteIndex=null;
+  let spatialIndexPromise=null;
+  let spatialPlannerSerial=0;
+  let activeSpatialPlan=null;
+  const SPATIAL_BOARD_MAX_METERS=1400;
+  const SPATIAL_DROP_MAX_METERS=2300;
+  const SPATIAL_TRANSFER_MAX_METERS=700;
 
   const coordFor=name=>{
     const q=normalize(name);if(!q)return null;
