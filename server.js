@@ -36,12 +36,12 @@ function buildIndex() {
 
   // The navigation-map layer is kept separate so the original transport atlas
   // remains easy to roll back while route visualization evolves independently.
-  html = html.replace('</head>', '<link rel="stylesheet" href="/map-enhancer.css" /></head>');
+  html = html.replace('</head>', '<link rel="stylesheet" href="/map-enhancer.css?v=10" /></head>');
   html = html.replace(
     '<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>',
-    '<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script><script src="/map-enhancer-pre.js"></script>'
+    '<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script><script src="/map-enhancer-pre.js?v=10"></script>'
   );
-  html = html.replace('</body>', '<script src="/map-enhancer.js"></script></body>');
+  html = html.replace('</body>', '<script src="/map-enhancer.js?v=10"></script></body>');
   return html;
 }
 
@@ -71,7 +71,7 @@ app.get('/sw.js', (_req, res) => {
 app.get(['/map-enhancer.css', '/map-enhancer-pre.js', '/map-enhancer.js'], (req, res) => {
   const asset = enhancerAssets.get(req.path);
   if (!asset) return res.sendStatus(404);
-  res.setHeader('Cache-Control', 'public, max-age=300');
+  res.setHeader('Cache-Control', 'no-cache, must-revalidate');
   res.type(asset.type).send(asset.body);
 });
 
