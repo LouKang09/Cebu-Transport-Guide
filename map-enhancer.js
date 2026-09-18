@@ -431,7 +431,7 @@
     const removable=[];
     map.eachLayer(layer=>{
       if(layer instanceof L.Polyline){
-        if(focusLayer?.hasLayer(layer)||liveLayer?.hasLayer(layer))return;
+        if(focusLayer?.hasLayer(layer)||liveLayer?.hasLayer(layer)||rerouteLayer?.hasLayer(layer))return;
         removable.push(layer);
       }
     });
@@ -799,6 +799,7 @@
     if(!route||!map)return;
 
     const serial=++focusRequestSerial;
+    resetAutoReroute({restoreLegend:false});
     focusLayer.clearLayers();
     staticPolylineOpacity(true);
     focusedRouteId=id;
@@ -834,6 +835,7 @@
       from,
       to
     };
+    prepareAutoRerouteForActiveRoute();
 
     const km=resolved.distance!=null?`${(resolved.distance/1000).toFixed(1)} km · `:'';
     const directionLabel=resolved.profile.direction==='reverse'?'Return':'Outbound';
@@ -869,6 +871,7 @@
     if(!a||!b||!map)return;
 
     const serial=++focusRequestSerial;
+    resetAutoReroute({restoreLegend:false});
     focusLayer.clearLayers();
     staticPolylineOpacity(true);
     focusedRouteId=null;
@@ -1493,6 +1496,7 @@
     liveLayer?.clearLayers();
     liveMarker=null;
     liveAccuracyCircle=null;
+    resetAutoReroute({restoreLegend:true});
     highlightActiveSegment(-1);
 
     const row=document.querySelector('.ctg-live-status');
@@ -1514,6 +1518,7 @@
 
   function clearFocus(){
     ++focusRequestSerial;
+    resetAutoReroute({restoreLegend:false});
     focusLayer.clearLayers();
     staticPolylineOpacity(false);
     focusedBounds=null;
@@ -2307,6 +2312,7 @@
   async function showSpatialDirect(itinerary,plan,{scroll=true}={}){
     const route=itinerary.entry.route;
     const serial=++focusRequestSerial;
+    resetAutoReroute({restoreLegend:false});
     focusLayer.clearLayers();
     staticPolylineOpacity(true);
     focusedRouteId=route.id;
@@ -2341,6 +2347,7 @@
     const boundsPoints=[...rideSlice,plan.origin.coord,plan.destination.coord];
     focusedBounds=L.latLngBounds(boundsPoints);
     activeRouteView={route,resolved,direction:itinerary.entry.direction,from:plan.origin.label,to:plan.destination.label};
+    prepareAutoRerouteForActiveRoute();
 
     updateSheet({
       route,
@@ -2356,6 +2363,7 @@
 
   async function showSpatialTransfer(itinerary,plan,{scroll=true}={}){
     const serial=++focusRequestSerial;
+    resetAutoReroute({restoreLegend:false});
     focusLayer.clearLayers();
     staticPolylineOpacity(true);
     focusedRouteId=null;
@@ -2621,6 +2629,7 @@
     catalog=coordCatalog();
     focusLayer=L.layerGroup().addTo(map);
     liveLayer=L.layerGroup().addTo(map);
+    rerouteLayer=L.layerGroup().addTo(map);
     removeLegacyOverviewPolylines();
     L.control.scale({metric:true,imperial:false,maxWidth:110,position:'bottomleft'}).addTo(map);
     createMapChrome();
