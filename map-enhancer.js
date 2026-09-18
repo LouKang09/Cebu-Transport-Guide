@@ -11,7 +11,22 @@
   const exactish=(a,b)=>{const x=normalize(a),y=normalize(b);return x===y||x.includes(y)||y.includes(x);};
   const colorFor=mode=>modeConfig[mode]?.color||'#64748b';
   const labelFor=mode=>modeConfig[mode]?.label||mode;
-  const segmentPalette=['#2563eb','#0891b2','#0f9f6e','#65a30d','#d97706','#ea580c','#db2777','#7c3aed'];
+  function hashString(value){
+    let hash=2166136261;
+    for(const char of String(value||'')){
+      hash^=char.charCodeAt(0);
+      hash=Math.imul(hash,16777619);
+    }
+    return hash>>>0;
+  }
+
+  function uniqueSegmentColor(routeKey,index,total){
+    const seed=hashString(routeKey)%360;
+    const hue=(seed+(index*137.50776405))%360;
+    const saturation=72+((index*7)%17);
+    const lightness=42+((index*11)%16);
+    return `hsl(${hue.toFixed(1)} ${saturation}% ${lightness}%)`;
+  }
 
   // Direction-specific profiles let return trips use different streets instead of
   // blindly reversing the outbound line. 04L is explicitly configured from the
@@ -70,6 +85,13 @@
   let lastLivePosition=null;
   let followLiveLocation=true;
   let highlightedSegmentIndex=-1;
+  let gpsSamples=[];
+  let gpsWarmupStartedAt=0;
+  let lastReliablePosition=null;
+  const GPS_TARGET_ACCURACY=65;
+  const GPS_MAX_ACCEPTABLE_ACCURACY=140;
+  const GPS_SAMPLE_WINDOW_MS=12000;
+  const GPS_MAX_JUMP_SPEED_MPS=55;
 
   const coordFor=name=>{
     const q=normalize(name);if(!q)return null;
@@ -80,15 +102,36 @@
 
   const routeHas=(route,place)=>['forward','reverse'].some(direction=>baseDirectionProfile(route,direction).stops.some(stop=>exactish(place,stop)));
 
+  function dedupeNames(values){
+    const seen=new Set();
+    return values.filter(value=>{
+      const key=normalize(value);
+      if(!key||seen.has(key))return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function genericMajorLocations(route){
+    const stops=Array.isArray(route.stops)?route.stops.filter(Boolean):[];
+    const landmarks=Array.isArray(route.landmarks)?route.landmarks.filter(Boolean):[];
+    if(stops.length>=3)return dedupeNames(stops);
+    if(stops.length===2)return dedupeNames([stops[0],...landmarks,stops[1]]);
+    if(stops.length===1)return dedupeNames([stops[0],...landmarks]);
+    return dedupeNames(landmarks);
+  }
+
   function baseDirectionProfile(route,direction='forward'){
     const configured=directionProfiles[route.code]?.[direction];
     if(configured)return{...configured,direction};
-    const stops=direction==='reverse'?[...route.stops].reverse():[...route.stops];
+    const forwardStops=genericMajorLocations(route);
+    const stops=direction==='reverse'?[...forwardStops].reverse():forwardStops;
     return{
       direction,
-      label:stops.join(' → '),
+      label:stops.join(' → ')||route.corridor||route.code,
       stops,
-      verified:direction==='forward'
+      verified:direction==='forward',
+      generated:true
     };
   }
 
@@ -225,7 +268,7 @@
         from,
         to:waypoints[index+1],
         geometry:segmentGeometry.length>1?segmentGeometry:[from.coord,waypoints[index+1].coord],
-        color:segmentPalette[index%segmentPalette.length],
+        color:uniqueSegmentColor(waypoints.map(item=>item.name).join('|'),index,waypoints.length-1),
         layer:null
       };
     });
@@ -750,18 +793,72 @@
     }
     row.hidden=false;
     updateLiveFollowButton();
-    if(lastLivePosition)updateLiveRouteStatus(lastLivePosition);
-    else setLiveMessage('Getting your location','Allow location access when your browser asks. Your position is not stored by this site.','tracking');
+    if(lastReliablePosition)updateLiveRouteStatus(lastReliablePosition);
+    else setLiveMessage('Getting a precise GPS fix','Waiting for a reliable phone GPS reading. Weak network-based locations are not plotted.','tracking');
   }
 
-  function handleLivePosition(geoPosition){
-    const {latitude,longitude,accuracy}=geoPosition.coords;
-    const next={lat:latitude,lng:longitude,accuracy,timestamp:geoPosition.timestamp};
-    lastLivePosition=next;
+  function pruneGpsSamples(now=Date.now()){
+    gpsSamples=gpsSamples.filter(sample=>now-sample.receivedAt<=GPS_SAMPLE_WINDOW_MS);
+  }
+
+  function weightedGpsPosition(samples){
+    if(!samples.length)return null;
+    let latSum=0,lngSum=0,weightSum=0,accuracyWeight=0;
+    const now=Date.now();
+
+    for(const sample of samples){
+      const recency=Math.max(.25,1-(now-sample.receivedAt)/GPS_SAMPLE_WINDOW_MS);
+      const accuracyWeightValue=1/Math.max(25,sample.accuracy)**2;
+      const weight=accuracyWeightValue*recency;
+      latSum+=sample.lat*weight;
+      lngSum+=sample.lng*weight;
+      accuracyWeight+=sample.accuracy*weight;
+      weightSum+=weight;
+    }
+
+    if(weightSum<=0)return samples.at(-1);
+    return{
+      lat:latSum/weightSum,
+      lng:lngSum/weightSum,
+      accuracy:Math.max(5,accuracyWeight/weightSum),
+      timestamp:samples.at(-1).timestamp,
+      receivedAt:now
+    };
+  }
+
+  function isImplausibleJump(next){
+    if(!lastReliablePosition)return false;
+    const elapsed=Math.max(.5,(next.timestamp-lastReliablePosition.timestamp)/1000);
+    const distance=haversineMeters([lastReliablePosition.lat,lastReliablePosition.lng],[next.lat,next.lng]);
+    const allowance=Math.max(
+      120,
+      GPS_MAX_JUMP_SPEED_MPS*elapsed+(lastReliablePosition.accuracy||0)+(next.accuracy||0)
+    );
+    if(distance<=allowance)return false;
+
+    // A much more accurate reading is allowed to replace an older bad fix.
+    const substantiallyBetter=next.accuracy<Math.max(35,(lastReliablePosition.accuracy||Infinity)*.55);
+    return!substantiallyBetter;
+  }
+
+  function showWeakGps(accuracy){
+    const rounded=Number.isFinite(accuracy)?Math.round(accuracy):null;
+    const suffix=rounded?` Current estimate is only ±${rounded} m.`:'';
+    setLiveMessage(
+      'Waiting for precise GPS',
+      `Your phone has not provided a reliable fix yet.${suffix} Turn on Precise Location / GPS, keep Wi-Fi and mobile data available, and move near a window or outdoors.`,
+      'near'
+    );
+  }
+
+  function renderReliablePosition(position){
+    lastReliablePosition=position;
+    lastLivePosition=position;
+    const {lat,lng,accuracy}=position;
 
     if(!liveMarker){
-      liveMarker=L.marker([latitude,longitude],{icon:liveLocationIcon('tracking'),zIndexOffset:1200}).addTo(liveLayer);
-      liveAccuracyCircle=L.circle([latitude,longitude],{
+      liveMarker=L.marker([lat,lng],{icon:liveLocationIcon('tracking'),zIndexOffset:1200}).addTo(liveLayer);
+      liveAccuracyCircle=L.circle([lat,lng],{
         radius:Math.max(accuracy,5),
         color:'#2563eb',
         weight:1,
@@ -771,20 +868,72 @@
         interactive:false
       }).addTo(liveLayer);
     }else{
-      liveMarker.setLatLng([latitude,longitude]);
-      liveAccuracyCircle?.setLatLng([latitude,longitude]).setRadius(Math.max(accuracy,5));
+      liveMarker.setLatLng([lat,lng]);
+      liveAccuracyCircle?.setLatLng([lat,lng]).setRadius(Math.max(accuracy,5));
     }
 
-    if(followLiveLocation)map.panTo([latitude,longitude],{animate:true,duration:.35});
-    updateLiveRouteStatus(next);
+    if(followLiveLocation)map.panTo([lat,lng],{animate:true,duration:.35});
+    updateLiveRouteStatus(position);
+  }
+
+  function handleLivePosition(geoPosition){
+    const {latitude,longitude,accuracy}=geoPosition.coords;
+    if(!Number.isFinite(latitude)||!Number.isFinite(longitude)||!Number.isFinite(accuracy))return;
+
+    const sample={
+      lat:latitude,
+      lng:longitude,
+      accuracy,
+      timestamp:geoPosition.timestamp||Date.now(),
+      receivedAt:Date.now()
+    };
+
+    pruneGpsSamples(sample.receivedAt);
+
+    // Do not place a precise-looking marker using a coarse cell/Wi-Fi estimate.
+    if(accuracy>GPS_MAX_ACCEPTABLE_ACCURACY){
+      showWeakGps(accuracy);
+      return;
+    }
+
+    gpsSamples.push(sample);
+    pruneGpsSamples();
+
+    const goodSamples=gpsSamples.filter(item=>item.accuracy<=GPS_TARGET_ACCURACY);
+    const candidates=goodSamples.length?goodSamples:gpsSamples;
+    const filtered=weightedGpsPosition(candidates);
+    if(!filtered)return;
+
+    if(isImplausibleJump(filtered)){
+      setLiveMessage(
+        'GPS jump ignored',
+        `A sudden location jump was rejected (±${Math.round(filtered.accuracy)} m). Waiting for another GPS reading.`,
+        'near'
+      );
+      return;
+    }
+
+    const warmupElapsed=Date.now()-gpsWarmupStartedAt;
+    const preciseEnough=filtered.accuracy<=GPS_TARGET_ACCURACY;
+
+    if(!preciseEnough&&warmupElapsed<12000&&!lastReliablePosition){
+      setLiveMessage(
+        'Improving GPS accuracy',
+        `Current reading is ±${Math.round(filtered.accuracy)} m. Waiting briefly for a stronger GPS fix before placing your marker.`,
+        'tracking'
+      );
+      return;
+    }
+
+    renderReliablePosition(filtered);
   }
 
   function handleLiveError(error){
     const message=error?.code===1
-      ?'Location permission was denied. Enable location permission in your browser to use live tracking.'
+      ?'Location permission was denied. Enable Precise Location for this browser/site, then try again.'
       :error?.code===2
-        ?'Your device could not determine a location right now.'
-        :'Location timed out. Move somewhere with a clearer GPS signal and try again.';
+        ?'Your device cannot determine an accurate location right now. Turn on GPS / Location Services and try outdoors.'
+        :'Location timed out before a reliable fix was received. Check GPS and Precise Location, then try again.';
     setLiveMessage('Live location unavailable',message,'off');
     stopLiveLocation({keepMessage:true});
   }
@@ -795,11 +944,17 @@
       window.alert('This browser does not support live location.');
       return;
     }
+
     followLiveLocation=true;
+    gpsSamples=[];
+    lastLivePosition=null;
+    lastReliablePosition=null;
+    gpsWarmupStartedAt=Date.now();
+
     liveWatchId=navigator.geolocation.watchPosition(handleLivePosition,handleLiveError,{
       enableHighAccuracy:true,
-      maximumAge:3000,
-      timeout:15000
+      maximumAge:0,
+      timeout:20000
     });
     updateLiveStatusUI();
   }
@@ -808,6 +963,9 @@
     if(liveWatchId!==null&&navigator.geolocation)navigator.geolocation.clearWatch(liveWatchId);
     liveWatchId=null;
     lastLivePosition=null;
+    lastReliablePosition=null;
+    gpsSamples=[];
+    gpsWarmupStartedAt=0;
     followLiveLocation=false;
     highlightedSegmentIndex=-1;
     liveLayer?.clearLayers();
