@@ -321,3 +321,201 @@ body.dark .ctg-trip-summary,body.dark .ctg-nav-sheet,body.dark .ctg-map-fab{bord
   70%{box-shadow:0 0 0 9px rgba(22,163,74,0)}
   100%{box-shadow:0 0 0 0 rgba(22,163,74,0)}
 }
+
+
+/* True on-map legend. This replaces the old "legend only in the side panel" experience. */
+.ctg-map-fab.ctg-legend-toggle.active{
+  background:var(--navy);
+  color:#fff;
+  border-color:var(--navy);
+}
+.ctg-map-legend{
+  position:absolute;
+  z-index:545;
+  top:76px;
+  left:14px;
+  width:min(250px,calc(100% - 92px));
+  max-height:calc(100% - 112px);
+  overflow:auto;
+  overscroll-behavior:contain;
+  padding:13px;
+  border:1px solid rgba(255,255,255,.82);
+  border-radius:16px;
+  background:color-mix(in srgb,var(--surface) 96%,transparent);
+  box-shadow:0 16px 38px rgba(7,17,38,.22);
+  backdrop-filter:blur(18px);
+  -webkit-backdrop-filter:blur(18px);
+  scrollbar-width:thin;
+}
+.ctg-map-legend[hidden]{display:none!important}
+.ctg-map-legend-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  margin-bottom:10px;
+}
+.ctg-map-legend-head>div{
+  display:grid;
+  gap:1px;
+}
+.ctg-map-legend-head small,
+.ctg-map-legend-label{
+  color:var(--muted);
+  font-size:7.5px;
+  font-weight:950;
+  letter-spacing:.14em;
+}
+.ctg-map-legend-head strong{
+  color:var(--ink);
+  font-size:14px;
+}
+.ctg-map-legend-close{
+  width:30px;
+  height:30px;
+  display:grid;
+  place-items:center;
+  border:0;
+  border-radius:9px;
+  background:var(--surface2);
+  color:var(--ink);
+  font-size:18px;
+}
+.ctg-map-legend-symbols{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:7px 10px;
+}
+.ctg-map-legend-symbols span{
+  display:flex;
+  align-items:center;
+  gap:7px;
+  min-width:0;
+  color:var(--muted);
+  font-size:8.5px;
+  font-weight:800;
+}
+.ctg-legend-dot{
+  width:10px;
+  height:10px;
+  border-radius:50%;
+  flex:none;
+  border:2px solid #fff;
+  box-shadow:0 1px 5px rgba(0,0,0,.22);
+}
+.ctg-legend-dot.wait{background:#ef4444}
+.ctg-legend-dot.drop{background:#10b981}
+.ctg-legend-dot.you{background:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.16)}
+.ctg-map-legend-divider{
+  height:1px;
+  margin:11px 0 10px;
+  background:var(--line);
+}
+.ctg-map-legend-modes,
+.ctg-map-legend-sections{
+  display:grid;
+  gap:4px;
+  margin-top:6px;
+}
+.ctg-map-legend-mode,
+.ctg-map-legend-section{
+  width:100%;
+  min-height:32px;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:5px 7px;
+  border:1px solid transparent;
+  border-radius:9px;
+  background:transparent;
+  color:var(--ink);
+  text-align:left;
+  font-size:8.5px;
+  font-weight:850;
+}
+.ctg-map-legend-mode:hover,
+.ctg-map-legend-section:hover{
+  background:var(--surface2);
+  border-color:var(--line);
+}
+.ctg-map-legend-mode.inactive{
+  opacity:.42;
+  text-decoration:line-through;
+}
+.ctg-legend-line{
+  width:26px;
+  height:5px;
+  flex:none;
+  border-radius:99px;
+  background:var(--legend-color);
+  border:1px solid rgba(255,255,255,.52);
+  box-shadow:0 0 0 1px rgba(0,0,0,.10);
+}
+.ctg-map-legend-section span{
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.ctg-map-legend-section.current{
+  background:var(--surface2);
+  border-color:var(--line);
+  box-shadow:0 0 0 2px color-mix(in srgb,var(--blue) 14%,transparent);
+}
+.ctg-map-legend-section.current::after{
+  content:'YOU';
+  margin-left:auto;
+  padding:2px 5px;
+  border-radius:5px;
+  background:#2563eb;
+  color:#fff;
+  font-size:6.5px;
+  font-weight:950;
+  letter-spacing:.08em;
+}
+body.dark .ctg-map-legend{
+  border-color:rgba(255,255,255,.13);
+  background:rgba(15,27,53,.94);
+}
+body.dark .ctg-legend-line{
+  border-color:rgba(255,255,255,.38);
+  box-shadow:0 0 0 1px rgba(255,255,255,.08);
+}
+
+/* Make the original sidebar legend less faint too. */
+.map-panel .legend,
+.map-panel [class*="legend"]{
+  opacity:1;
+}
+.map-panel .legend span,
+.map-panel [class*="legend"] span{
+  color:color-mix(in srgb,var(--ink) 76%,var(--muted));
+}
+.map-panel .legend i,
+.map-panel [class*="legend"] i{
+  filter:saturate(1.15) brightness(1.12);
+}
+
+@media(max-width:640px){
+  .ctg-map-legend{
+    top:64px;
+    left:10px;
+    width:min(255px,calc(100% - 76px));
+    max-height:46%;
+    padding:11px;
+    border-radius:14px;
+  }
+  .ctg-map-legend-symbols{
+    grid-template-columns:1fr;
+    gap:6px;
+  }
+  .ctg-map-legend-mode,
+  .ctg-map-legend-section{
+    min-height:38px;
+    font-size:9px;
+  }
+  .ctg-legend-line{
+    width:30px;
+    height:6px;
+  }
+}
