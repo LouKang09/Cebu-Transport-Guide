@@ -11,6 +11,22 @@
   const exactish=(a,b)=>{const x=normalize(a),y=normalize(b);return x===y||x.includes(y)||y.includes(x);};
   const colorFor=mode=>modeConfig[mode]?.color||'#64748b';
   const labelFor=mode=>modeConfig[mode]?.label||mode;
+  const segmentPalette=['#2563eb','#0891b2','#0f9f6e','#65a30d','#d97706','#ea580c','#db2777','#7c3aed'];
+
+  // Direction-specific profiles let return trips use different streets instead of
+  // blindly reversing the outbound line. 04L is explicitly configured from the
+  // commuter pattern supplied for this guide; other routes fall back to a clearly
+  // labelled reverse estimate until a direction-specific profile is added.
+  const directionProfiles={
+    '04L':{
+      forward:{label:'Lahug → Ayala → SM City Cebu',stops:['Lahug','Ayala','SM City Cebu'],verified:true},
+      reverse:{label:'SM City Cebu → Landers → Kasambagan → Lahug',stops:['SM City Cebu','Landers Superstore Cebu','Kasambagan','Lahug'],verified:true}
+    },
+    '13C':{
+      forward:{label:'Talamban → Country Mall → Ayala → Echavez → Colon',stops:['Talamban','Gaisano Country Mall','Ayala','Echavez','Colon'],verified:true},
+      reverse:{label:'Colon → Echavez → Ayala → Country Mall → Talamban',stops:['Colon','Echavez','Ayala','Gaisano Country Mall','Talamban'],verified:false}
+    }
+  };
 
   const extraPlaces=[
     ['Apas',10.3338,123.9078],['IT Park',10.3292,123.9067],['Cebu IT Park',10.3292,123.9067],['Lahug',10.3232,123.8994],['JY Square',10.3250,123.8982],
@@ -25,7 +41,8 @@
     ['B. Rodriguez',10.3052,123.8822],['Englis',10.2985,123.8830],['Tabo-an',10.2934,123.8912],['Pardo',10.2810,123.8620],['Basak',10.2734,123.8540],
     ['Bulacao',10.2642,123.8517],['Punta',10.2871,123.8790],['SRP',10.2818,123.8814],['SM Seaside',10.2818,123.8814],['Il Corso',10.2528,123.8814],
     ['Tabunok',10.2597,123.8465],['Talisay',10.2447,123.8494],['Minglanilla',10.2450,123.7964],['Naga',10.2089,123.7580],['Carcar',10.1060,123.6402],
-    ['Mactan-Cebu International Airport',10.3075,123.9794],['MCIA',10.3075,123.9794],['Cebu Doctors University',10.3361,123.9351],['USC Downtown',10.2978,123.8980],['USJ-R',10.2959,123.8999]
+    ['Mactan-Cebu International Airport',10.3075,123.9794],['MCIA',10.3075,123.9794],['Cebu Doctors University',10.3361,123.9351],['USC Downtown',10.2978,123.8980],['USJ-R',10.2959,123.8999],
+    ['Landers Superstore Cebu',10.32072,123.90958],['Landers',10.32072,123.90958],['Kasambagan',10.3243,123.9101],['Echavez',10.3056,123.89988]
   ];
 
   const getRoutes=()=>typeof ROUTES!=='undefined'?ROUTES:[];
@@ -45,6 +62,14 @@
   let focusRequestSerial=0;
   let expandingRouteBook=false;
   let expandTimer=null;
+  let activeRouteView=null;
+  let liveLayer=null;
+  let liveWatchId=null;
+  let liveMarker=null;
+  let liveAccuracyCircle=null;
+  let lastLivePosition=null;
+  let followLiveLocation=true;
+  let highlightedSegmentIndex=-1;
 
   const coordFor=name=>{
     const q=normalize(name);if(!q)return null;
@@ -55,28 +80,65 @@
 
   const routeHas=(route,place)=>route.stops.some(stop=>exactish(place,stop));
 
-  const routePoints=(route,from='',to='')=>{
-    let stops=route.stops.slice();
+  function baseDirectionProfile(route,direction='forward'){
+    const configured=directionProfiles[route.code]?.[direction];
+    if(configured)return{...configured,direction};
+    const stops=direction==='reverse'?[...route.stops].reverse():[...route.stops];
+    return{
+      direction,
+      label:stops.join(' → '),
+      stops,
+      verified:direction==='forward'
+    };
+  }
+
+  function inferDirection(route,from='',to='',requested=''){
+    if(requested==='forward'||requested==='reverse')return requested;
+    if(from&&to){
+      for(const direction of ['forward','reverse']){
+        const profile=baseDirectionProfile(route,direction);
+        const fromIndex=profile.stops.findIndex(stop=>exactish(from,stop));
+        const toIndex=profile.stops.findIndex(stop=>exactish(to,stop));
+        if(fromIndex>=0&&toIndex>=0&&fromIndex<toIndex)return direction;
+      }
+    }
+    return'forward';
+  }
+
+  function routeWaypoints(route,{from='',to='',direction=''}={}){
+    const resolvedDirection=inferDirection(route,from,to,direction);
+    const profile=baseDirectionProfile(route,resolvedDirection);
+    let stops=[...profile.stops];
+
     if(from&&to){
       const fromIndex=stops.findIndex(stop=>exactish(from,stop));
       const toIndex=stops.findIndex(stop=>exactish(to,stop));
-      if(fromIndex>=0&&toIndex>=0&&fromIndex!==toIndex){
-        stops=fromIndex<toIndex?stops.slice(fromIndex,toIndex+1):stops.slice(toIndex,fromIndex+1).reverse();
-      }
+      if(fromIndex>=0&&toIndex>=0&&fromIndex<toIndex)stops=stops.slice(fromIndex,toIndex+1);
     }
 
-    const points=[];
-    stops.forEach(stop=>{
-      const c=coordFor(stop);
-      if(c&&(!points.length||Math.abs(points.at(-1)[0]-c[0])>.00001||Math.abs(points.at(-1)[1]-c[1])>.00001))points.push(c);
+    const waypoints=[];
+    stops.forEach(name=>{
+      const coord=coordFor(name);
+      if(!coord)return;
+      const previous=waypoints.at(-1);
+      if(!previous||Math.abs(previous.coord[0]-coord[0])>.00001||Math.abs(previous.coord[1]-coord[1])>.00001){
+        waypoints.push({name,coord});
+      }
     });
 
-    if(points.length<2){
+    if(waypoints.length<2){
       const fallback=getMapLines().find(line=>normalize(line.id)===normalize(route.code)||normalize(line.name).includes(normalize(route.code)));
-      if(fallback?.points?.length>1)return fallback.points;
+      if(fallback?.points?.length>1){
+        return{
+          profile,
+          waypoints:fallback.points.map((coord,index)=>({name:index===0?stops[0]||route.code:index===fallback.points.length-1?stops.at(-1)||route.code:`Route point ${index+1}`,coord}))
+        };
+      }
     }
-    return points;
-  };
+    return{profile,waypoints};
+  }
+
+  const routePoints=(route,from='',to='',direction='')=>routeWaypoints(route,{from,to,direction}).waypoints.map(item=>item.coord);
 
   const thinWaypoints=(points,max=MAX_ROUTER_WAYPOINTS)=>{
     if(points.length<=max)return points;
@@ -129,13 +191,58 @@
     return result;
   }
 
+  function nearestGeometryIndex(geometry,coord,startIndex=0){
+    let bestIndex=startIndex;
+    let bestDistance=Infinity;
+    for(let i=startIndex;i<geometry.length;i++){
+      const dLat=geometry[i][0]-coord[0];
+      const dLng=(geometry[i][1]-coord[1])*Math.cos(coord[0]*Math.PI/180);
+      const score=dLat*dLat+dLng*dLng;
+      if(score<bestDistance){bestDistance=score;bestIndex=i;}
+    }
+    return bestIndex;
+  }
+
+  function splitGeometryByWaypoints(geometry,waypoints){
+    if(geometry.length<2||waypoints.length<2)return[];
+    const indices=[];
+    let cursor=0;
+    waypoints.forEach((waypoint,index)=>{
+      const found=nearestGeometryIndex(geometry,waypoint.coord,cursor);
+      const clamped=index===waypoints.length-1?geometry.length-1:found;
+      indices.push(clamped);
+      cursor=Math.min(geometry.length-1,clamped);
+    });
+    indices[0]=0;
+    indices[indices.length-1]=geometry.length-1;
+
+    return waypoints.slice(0,-1).map((from,index)=>{
+      const start=indices[index];
+      const end=Math.max(start+1,indices[index+1]);
+      const segmentGeometry=geometry.slice(start,Math.min(geometry.length,end+1));
+      return{
+        index,
+        from,
+        to:waypoints[index+1],
+        geometry:segmentGeometry.length>1?segmentGeometry:[from.coord,waypoints[index+1].coord],
+        color:segmentPalette[index%segmentPalette.length],
+        layer:null
+      };
+    });
+  }
+
   async function resolveRoutePath(route,opts={}){
-    const via=routePoints(route,opts.from||'',opts.to||'');
-    if(via.length<2)return{via,geometry:via,distance:null,roadFollowed:false};
+    const routeInfo=routeWaypoints(route,opts);
+    const waypoints=routeInfo.waypoints;
+    const via=waypoints.map(item=>item.coord);
+    if(via.length<2)return{...routeInfo,via,geometry:via,segments:[],distance:null,roadFollowed:false};
     const road=await fetchRoadGeometry(via);
+    const geometry=road.roadFollowed?road.geometry:via;
     return{
+      ...routeInfo,
       via,
-      geometry:road.roadFollowed?road.geometry:via,
+      geometry,
+      segments:road.roadFollowed?splitGeometryByWaypoints(geometry,waypoints):[],
       distance:road.distance,
       roadFollowed:road.roadFollowed,
       error:road.error
