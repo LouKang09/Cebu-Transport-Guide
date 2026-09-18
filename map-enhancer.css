@@ -756,3 +756,25 @@ body.dark .ctg-legend-line{
     margin-bottom:10px;
   }
 }
+
+
+/* Live automatic rerouting. */
+.ctg-reroute-badge{
+  min-width:72px;
+  height:24px;
+  display:grid;
+  place-items:center;
+  padding:0 8px;
+  border-radius:999px;
+  border:2px solid #fff;
+  background:#f59e0b;
+  color:#111827;
+  box-shadow:0 5px 16px rgba(0,0,0,.24);
+  font-size:7.5px;
+  font-weight:950;
+  letter-spacing:.08em;
+  white-space:nowrap;
+}
+body.dark .ctg-reroute-badge{
+  color:#111827;
+}
