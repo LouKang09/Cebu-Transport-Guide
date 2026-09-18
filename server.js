@@ -32,7 +32,17 @@ function buildIndex() {
     .map((name) => fs.readFileSync(path.join(__dirname, name), 'utf8'))
     .join('');
 
-  return zlib.gunzipSync(Buffer.from(encoded, 'base64')).toString('utf8');
+  let html = zlib.gunzipSync(Buffer.from(encoded, 'base64')).toString('utf8');
+
+  // The navigation-map layer is kept separate so the original transport atlas
+  // remains easy to roll back while route visualization evolves independently.
+  html = html.replace('</head>', '<link rel="stylesheet" href="/map-enhancer.css" /></head>');
+  html = html.replace(
+    '<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>',
+    '<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script><script src="/map-enhancer-pre.js"></script>'
+  );
+  html = html.replace('</body>', '<script src="/map-enhancer.js"></script></body>');
+  return html;
 }
 
 const indexHtml = buildIndex();
@@ -49,6 +59,13 @@ app.get('/sw.js', (_req, res) => {
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.sendFile(path.join(__dirname, 'sw.js'));
 });
+
+for (const asset of ['map-enhancer.css', 'map-enhancer-pre.js', 'map-enhancer.js']) {
+  app.get(`/${asset}`, (_req, res) => {
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.sendFile(path.join(__dirname, asset));
+  });
+}
 
 app.get('*', (_req, res) => {
   res.setHeader('Cache-Control', 'public, max-age=300');
