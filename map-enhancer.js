@@ -1244,6 +1244,795 @@
     if(grid)grid.scrollTo({top:0,behavior:'smooth'});
   }
 
+  function localPlaceMatch(query){
+    const q=normalize(query);
+    if(!q)return null;
+    const ranked=catalog
+      .map(item=>{
+        let score=0;
+        if(item.key===q)score=100;
+        else if(item.key.startsWith(q))score=80;
+        else if(q.startsWith(item.key))score=70;
+        else if(item.key.includes(q))score=55;
+        else if(q.includes(item.key))score=45;
+        return{item,score};
+      })
+      .filter(row=>row.score>0)
+      .sort((a,b)=>b.score-a.score);
+    const hit=ranked[0]?.item;
+    return hit?{label:hit.name,coord:[hit.lat,hit.lng],source:'atlas'}:null;
+  }
+
+  function formatPhotonLabel(properties={}){
+    const parts=[
+      properties.name,
+      properties.street,
+      properties.district,
+      properties.locality,
+      properties.city,
+      properties.county,
+      properties.state
+    ].filter(Boolean);
+    const seen=new Set();
+    return parts.filter(value=>{
+      const key=normalize(value);
+      if(!key||seen.has(key))return false;
+      seen.add(key);
+      return true;
+    }).slice(0,5).join(', ');
+  }
+
+  async function geocodePlace(query,{limit=6,signal}={}){
+    const raw=String(query||'').trim();
+    if(!raw)return[];
+
+    const local=localPlaceMatch(raw);
+    const cacheKey=normalize(raw);
+    if(geocodeCache.has(cacheKey)){
+      const cached=geocodeCache.get(cacheKey);
+      return local?[local,...cached.filter(item=>haversineMeters(local.coord,item.coord)>80)]:cached;
+    }
+
+    const params=new URLSearchParams({
+      q:`${raw}, Cebu, Philippines`,
+      limit:String(limit),
+      lang:'en',
+      lat:'10.3157',
+      lon:'123.8854',
+      bbox:CEBU_SEARCH_BBOX
+    });
+
+    try{
+      const response=await fetch(`${PLACE_SEARCH_URL}?${params.toString()}`,{
+        signal,
+        credentials:'omit',
+        referrerPolicy:'no-referrer'
+      });
+      if(!response.ok)throw new Error(`Place search returned ${response.status}`);
+      const data=await response.json();
+      const results=(data?.features||[])
+        .map(feature=>{
+          const coordinates=feature?.geometry?.coordinates;
+          if(!Array.isArray(coordinates)||coordinates.length<2)return null;
+          const [lng,lat]=coordinates;
+          if(!Number.isFinite(lat)||!Number.isFinite(lng))return null;
+          if(lat<9.2||lat>11.6||lng<123.2||lng>124.4)return null;
+          const label=formatPhotonLabel(feature.properties)||raw;
+          return{
+            label,
+            coord:[lat,lng],
+            source:'photon',
+            type:feature.properties?.type||feature.properties?.osm_value||''
+          };
+        })
+        .filter(Boolean);
+
+      const deduped=[];
+      const seen=new Set();
+      for(const result of results){
+        const key=`${normalize(result.label)}|${result.coord[0].toFixed(4)}|${result.coord[1].toFixed(4)}`;
+        if(seen.has(key))continue;
+        seen.add(key);
+        deduped.push(result);
+      }
+      geocodeCache.set(cacheKey,deduped);
+      return local?[local,...deduped.filter(item=>haversineMeters(local.coord,item.coord)>80)]:deduped;
+    }catch(error){
+      if(error?.name==='AbortError')throw error;
+      return local?[local]:[];
+    }
+  }
+
+  function clearPlaceSelection(input){
+    delete input.dataset.ctgLat;
+    delete input.dataset.ctgLng;
+    delete input.dataset.ctgLabel;
+  }
+
+  function setPlaceSelection(input,place){
+    input.value=place.label;
+    input.dataset.ctgLat=String(place.coord[0]);
+    input.dataset.ctgLng=String(place.coord[1]);
+    input.dataset.ctgLabel=place.label;
+  }
+
+  function selectedPlaceFromInput(input){
+    const lat=Number(input.dataset.ctgLat);
+    const lng=Number(input.dataset.ctgLng);
+    if(Number.isFinite(lat)&&Number.isFinite(lng)&&input.dataset.ctgLabel===input.value){
+      return{label:input.dataset.ctgLabel,coord:[lat,lng],source:'selected'};
+    }
+    return null;
+  }
+
+  async function resolveInputPlace(input){
+    const selected=selectedPlaceFromInput(input);
+    if(selected)return selected;
+    const matches=await geocodePlace(input.value,{limit:6});
+    if(!matches.length)throw new Error(`Could not locate “${input.value.trim()}” in Cebu.`);
+    const place=matches[0];
+    setPlaceSelection(input,place);
+    return place;
+  }
+
+  function setupPlaceAutocomplete(input){
+    if(!input||input.dataset.ctgAutocomplete==='ready')return;
+    input.dataset.ctgAutocomplete='ready';
+    input.autocomplete='off';
+
+    const parent=input.parentElement;
+    if(!parent)return;
+    parent.classList.add('ctg-place-field');
+
+    const box=document.createElement('div');
+    box.className='ctg-place-suggestions';
+    box.hidden=true;
+    parent.append(box);
+
+    let timer=null;
+    let querySerial=0;
+
+    const hide=()=>{box.hidden=true;};
+
+    const render=places=>{
+      box.replaceChildren();
+      if(!places.length){
+        hide();
+        return;
+      }
+
+      places.forEach(place=>{
+        const button=document.createElement('button');
+        button.type='button';
+        button.className='ctg-place-suggestion';
+        const icon=document.createElement('span');
+        icon.className='ctg-place-suggestion-icon';
+        icon.textContent='⌖';
+        const copy=document.createElement('span');
+        const strong=document.createElement('strong');
+        strong.textContent=place.label.split(',')[0]||place.label;
+        const small=document.createElement('small');
+        small.textContent=place.label;
+        copy.append(strong,small);
+        button.append(icon,copy);
+        button.addEventListener('pointerdown',event=>{
+          event.preventDefault();
+          setPlaceSelection(input,place);
+          hide();
+          input.dispatchEvent(new Event('change',{bubbles:true}));
+        });
+        box.append(button);
+      });
+      box.hidden=false;
+    };
+
+    input.addEventListener('input',()=>{
+      clearPlaceSelection(input);
+      clearTimeout(timer);
+      const query=input.value.trim();
+      if(query.length<2){
+        hide();
+        return;
+      }
+
+      timer=setTimeout(async()=>{
+        const serial=++querySerial;
+        const previous=geocodeControllers.get(input);
+        previous?.abort();
+        const controller=new AbortController();
+        geocodeControllers.set(input,controller);
+
+        try{
+          const places=await geocodePlace(query,{limit:6,signal:controller.signal});
+          if(serial!==querySerial||input.value.trim()!==query)return;
+          render(places);
+        }catch(error){
+          if(error?.name!=='AbortError')hide();
+        }
+      },260);
+    });
+
+    input.addEventListener('focus',()=>{
+      const selected=selectedPlaceFromInput(input);
+      if(!selected&&input.value.trim().length>=2)input.dispatchEvent(new Event('input',{bubbles:false}));
+    });
+    input.addEventListener('blur',()=>setTimeout(hide,140));
+    input.addEventListener('keydown',event=>{
+      if(event.key==='Enter'){
+        event.preventDefault();
+        hide();
+        runSpatialPlanner();
+      }else if(event.key==='Escape'){
+        hide();
+      }
+    });
+  }
+
+  function buildSpatialRouteIndex(){
+    if(spatialRouteIndex)return spatialRouteIndex;
+    const entries=[];
+    for(const route of getRoutes()){
+      for(const direction of ['forward','reverse']){
+        const info=routeWaypoints(route,{direction});
+        const points=info.waypoints.map(item=>item.coord);
+        if(points.length<2)continue;
+        entries.push({
+          route,
+          direction,
+          profile:info.profile,
+          waypoints:info.waypoints,
+          points
+        });
+      }
+    }
+    spatialRouteIndex=entries;
+    return entries;
+  }
+
+  function scheduleSpatialIndex(){
+    if(spatialRouteIndex||spatialIndexPromise)return;
+    spatialIndexPromise=new Promise(resolve=>{
+      const build=()=>{
+        try{resolve(buildSpatialRouteIndex());}
+        finally{spatialIndexPromise=null;}
+      };
+      if('requestIdleCallback' in window)requestIdleCallback(build,{timeout:1400});
+      else setTimeout(build,180);
+    });
+  }
+
+  function projectPointToSegmentInfo(point,a,b){
+    const refLat=toRadians((point[0]+a[0]+b[0])/3);
+    const metersPerLat=111320;
+    const metersPerLng=111320*Math.cos(refLat);
+    const px=(point[1]-a[1])*metersPerLng;
+    const py=(point[0]-a[0])*metersPerLat;
+    const bx=(b[1]-a[1])*metersPerLng;
+    const by=(b[0]-a[0])*metersPerLat;
+    const lengthSquared=bx*bx+by*by;
+    const t=lengthSquared===0?0:Math.max(0,Math.min(1,(px*bx+py*by)/lengthSquared));
+    const coord=[
+      a[0]+(b[0]-a[0])*t,
+      a[1]+(b[1]-a[1])*t
+    ];
+    return{
+      t,
+      coord,
+      distance:haversineMeters(point,coord)
+    };
+  }
+
+  function nearestProjectionOnPolyline(point,points){
+    if(!points?.length)return{distance:Infinity,coord:point,progress:0,segmentIndex:0};
+    if(points.length===1)return{distance:haversineMeters(point,points[0]),coord:points[0],progress:0,segmentIndex:0};
+
+    const lengths=[];
+    let total=0;
+    for(let i=0;i<points.length-1;i++){
+      const length=haversineMeters(points[i],points[i+1]);
+      lengths.push(length);
+      total+=length;
+    }
+
+    let cumulative=0;
+    let best={distance:Infinity,coord:points[0],progress:0,segmentIndex:0,t:0};
+    for(let i=0;i<points.length-1;i++){
+      const projected=projectPointToSegmentInfo(point,points[i],points[i+1]);
+      if(projected.distance<best.distance){
+        best={
+          ...projected,
+          segmentIndex:i,
+          progress:total>0?(cumulative+projected.t*lengths[i])/total:0
+        };
+      }
+      cumulative+=lengths[i];
+    }
+    return best;
+  }
+
+  function samplePolyline(points){
+    if(points.length<2)return[];
+    const segmentLengths=points.slice(0,-1).map((point,index)=>haversineMeters(point,points[index+1]));
+    const total=segmentLengths.reduce((sum,value)=>sum+value,0)||1;
+    const samples=[];
+    let cumulative=0;
+    points.slice(0,-1).forEach((point,index)=>{
+      const next=points[index+1];
+      const length=segmentLengths[index];
+      const divisions=Math.max(1,Math.min(4,Math.ceil(length/650)));
+      for(let step=0;step<divisions;step++){
+        const t=step/divisions;
+        samples.push({
+          coord:[point[0]+(next[0]-point[0])*t,point[1]+(next[1]-point[1])*t],
+          progress:(cumulative+length*t)/total
+        });
+      }
+      cumulative+=length;
+    });
+    samples.push({coord:points.at(-1),progress:1});
+    return samples;
+  }
+
+  function closestPolylineConnection(aPoints,bPoints){
+    let best={distance:Infinity,aCoord:null,bCoord:null,progressA:0,progressB:0};
+
+    for(const sample of samplePolyline(aPoints)){
+      const projected=nearestProjectionOnPolyline(sample.coord,bPoints);
+      if(projected.distance<best.distance){
+        best={
+          distance:projected.distance,
+          aCoord:sample.coord,
+          bCoord:projected.coord,
+          progressA:sample.progress,
+          progressB:projected.progress
+        };
+      }
+    }
+
+    for(const sample of samplePolyline(bPoints)){
+      const projected=nearestProjectionOnPolyline(sample.coord,aPoints);
+      if(projected.distance<best.distance){
+        best={
+          distance:projected.distance,
+          aCoord:projected.coord,
+          bCoord:sample.coord,
+          progressA:projected.progress,
+          progressB:sample.progress
+        };
+      }
+    }
+    return best;
+  }
+
+  function nearestWaypointName(entry,coord){
+    let best={distance:Infinity,name:entry.route.code};
+    entry.waypoints.forEach(waypoint=>{
+      const distance=haversineMeters(coord,waypoint.coord);
+      if(distance<best.distance)best={distance,name:waypoint.name};
+    });
+    return best.name;
+  }
+
+  function nearestCatalogName(coord,maxMeters=850){
+    let best={distance:Infinity,name:''};
+    catalog.forEach(item=>{
+      const distance=haversineMeters(coord,[item.lat,item.lng]);
+      if(distance<best.distance)best={distance,name:item.name};
+    });
+    return best.distance<=maxMeters?best.name:'transfer point';
+  }
+
+  function findSpatialItineraries(origin,destination){
+    const entries=buildSpatialRouteIndex();
+    const prepared=entries.map(entry=>({
+      ...entry,
+      originProjection:nearestProjectionOnPolyline(origin.coord,entry.points),
+      destinationProjection:nearestProjectionOnPolyline(destination.coord,entry.points)
+    }));
+
+    const direct=[];
+    for(const entry of prepared){
+      const board=entry.originProjection;
+      const drop=entry.destinationProjection;
+      if(board.distance>SPATIAL_BOARD_MAX_METERS||drop.distance>SPATIAL_DROP_MAX_METERS)continue;
+      if(drop.progress<=board.progress+.025)continue;
+      direct.push({
+        rides:1,
+        entry,
+        board,
+        drop,
+        boardName:nearestWaypointName(entry,board.coord),
+        dropName:nearestWaypointName(entry,drop.coord),
+        score:board.distance*1.12+drop.distance*1.2+220
+      });
+    }
+
+    const firstLegs=prepared
+      .filter(entry=>entry.originProjection.distance<=SPATIAL_BOARD_MAX_METERS&&entry.originProjection.progress<.94)
+      .sort((a,b)=>a.originProjection.distance-b.originProjection.distance)
+      .slice(0,24);
+    const secondLegs=prepared
+      .filter(entry=>entry.destinationProjection.distance<=SPATIAL_DROP_MAX_METERS&&entry.destinationProjection.progress>.06)
+      .sort((a,b)=>a.destinationProjection.distance-b.destinationProjection.distance)
+      .slice(0,28);
+
+    const transfers=[];
+    const seen=new Set();
+    for(const first of firstLegs){
+      for(const second of secondLegs){
+        if(first.route.id===second.route.id)continue;
+        const key=`${first.route.id}|${first.direction}>${second.route.id}|${second.direction}`;
+        if(seen.has(key))continue;
+        seen.add(key);
+
+        const connection=closestPolylineConnection(first.points,second.points);
+        if(connection.distance>SPATIAL_TRANSFER_MAX_METERS)continue;
+        if(connection.progressA<=first.originProjection.progress+.025)continue;
+        if(second.destinationProjection.progress<=connection.progressB+.025)continue;
+
+        const transferMid=[
+          (connection.aCoord[0]+connection.bCoord[0])/2,
+          (connection.aCoord[1]+connection.bCoord[1])/2
+        ];
+        transfers.push({
+          rides:2,
+          first,
+          second,
+          connection,
+          board:first.originProjection,
+          drop:second.destinationProjection,
+          boardName:nearestWaypointName(first,first.originProjection.coord),
+          dropName:nearestWaypointName(second,second.destinationProjection.coord),
+          transferName:nearestCatalogName(transferMid),
+          score:first.originProjection.distance*1.1+
+            second.destinationProjection.distance*1.2+
+            connection.distance*1.65+860
+        });
+      }
+    }
+
+    const combined=[...direct.sort((a,b)=>a.score-b.score).slice(0,8),...transfers.sort((a,b)=>a.score-b.score).slice(0,12)]
+      .sort((a,b)=>a.score-b.score);
+
+    const routeKeys=new Set();
+    return combined.filter(item=>{
+      const key=item.rides===1
+        ?`1|${item.entry.route.id}|${item.entry.direction}`
+        :`2|${item.first.route.id}|${item.first.direction}|${item.second.route.id}|${item.second.direction}`;
+      if(routeKeys.has(key))return false;
+      routeKeys.add(key);
+      return true;
+    }).slice(0,7);
+  }
+
+  function routeModeLabel(route){
+    return labelFor(route.mode)||'Public transport';
+  }
+
+  function createWalkText(meters){
+    if(meters<80)return'nearby';
+    return `${formatDistance(meters)} walk`;
+  }
+
+  function renderSpatialPlanner(plan){
+    const host=document.getElementById('plannerResults');
+    if(!host)return;
+    host.replaceChildren();
+
+    const summary=document.createElement('div');
+    summary.className='ctg-spatial-summary';
+    const summaryStrong=document.createElement('strong');
+    summaryStrong.textContent=`${plan.origin.label} → ${plan.destination.label}`;
+    const summarySmall=document.createElement('small');
+    summarySmall.textContent='Live Cebu place search + route proximity. Walking distances are approximate.';
+    summary.append(summaryStrong,summarySmall);
+    host.append(summary);
+
+    if(!plan.itineraries.length){
+      const empty=document.createElement('div');
+      empty.className='ctg-spatial-empty';
+      const title=document.createElement('strong');
+      title.textContent='No reliable 1- or 2-ride match found';
+      const copy=document.createElement('p');
+      copy.textContent='Try a nearby landmark, terminal, barangay, or street. The planner will not invent a route when the mapped network does not support one.';
+      empty.append(title,copy);
+      host.append(empty);
+      return;
+    }
+
+    plan.itineraries.forEach((itinerary,index)=>{
+      const card=document.createElement('article');
+      card.className='ctg-spatial-result';
+      if(index===0)card.classList.add('best');
+
+      const top=document.createElement('div');
+      top.className='ctg-spatial-result-top';
+      const badge=document.createElement('span');
+      badge.className='ctg-spatial-ride-count';
+      badge.textContent=itinerary.rides===1?'1 ride':'2 rides';
+      const title=document.createElement('strong');
+      if(itinerary.rides===1){
+        title.textContent=`${itinerary.entry.route.code} · ${routeModeLabel(itinerary.entry.route)}`;
+      }else{
+        title.textContent=`${itinerary.first.route.code} → ${itinerary.second.route.code}`;
+      }
+      top.append(badge,title);
+      if(index===0){
+        const best=document.createElement('span');
+        best.className='ctg-spatial-best';
+        best.textContent='Best match';
+        top.append(best);
+      }
+
+      const steps=document.createElement('div');
+      steps.className='ctg-spatial-steps';
+
+      const addStep=(kind,heading,detail)=>{
+        const row=document.createElement('div');
+        row.className=`ctg-spatial-step ${kind}`;
+        const dot=document.createElement('span');
+        const copy=document.createElement('div');
+        const strong=document.createElement('strong');
+        strong.textContent=heading;
+        const small=document.createElement('small');
+        small.textContent=detail;
+        copy.append(strong,small);
+        row.append(dot,copy);
+        steps.append(row);
+      };
+
+      if(itinerary.rides===1){
+        addStep('walk',`Go to ${itinerary.boardName}`,createWalkText(itinerary.board.distance));
+        addStep('ride',`Ride ${itinerary.entry.route.code} ${itinerary.entry.direction==='reverse'?'return':'outbound'}`,itinerary.entry.profile.label||itinerary.entry.route.corridor);
+        addStep('drop',`Drop near ${itinerary.dropName}`,`${createWalkText(itinerary.drop.distance)} to destination`);
+      }else{
+        addStep('walk',`Go to ${itinerary.boardName}`,createWalkText(itinerary.first.originProjection.distance));
+        addStep('ride',`Ride ${itinerary.first.route.code}`,itinerary.first.profile.label||itinerary.first.route.corridor);
+        addStep('transfer',`Transfer near ${itinerary.transferName}`,itinerary.connection.distance<80?'routes meet nearby':`${formatDistance(itinerary.connection.distance)} between routes`);
+        addStep('ride',`Then ride ${itinerary.second.route.code}`,itinerary.second.profile.label||itinerary.second.route.corridor);
+        addStep('drop',`Drop near ${itinerary.dropName}`,`${createWalkText(itinerary.second.destinationProjection.distance)} to destination`);
+      }
+
+      const actions=document.createElement('div');
+      actions.className='ctg-spatial-actions';
+      const mapButton=document.createElement('button');
+      mapButton.type='button';
+      mapButton.className='primary-btn compact';
+      mapButton.textContent='Show on map';
+      mapButton.addEventListener('click',()=>showSpatialItinerary(itinerary,plan,{scroll:true}));
+      actions.append(mapButton);
+
+      card.append(top,steps,actions);
+      host.append(card);
+    });
+  }
+
+  function renderPlannerLoading(from,to){
+    const host=document.getElementById('plannerResults');
+    if(!host)return;
+    host.replaceChildren();
+    const loading=document.createElement('div');
+    loading.className='ctg-spatial-loading';
+    const spinner=document.createElement('span');
+    const copy=document.createElement('div');
+    const strong=document.createElement('strong');
+    strong.textContent='Finding the best Cebu route…';
+    const small=document.createElement('small');
+    small.textContent=`Matching “${from}” to “${to}” against the mapped transport network.`;
+    copy.append(strong,small);
+    loading.append(spinner,copy);
+    host.append(loading);
+  }
+
+  function renderPlannerError(message){
+    const host=document.getElementById('plannerResults');
+    if(!host)return;
+    host.replaceChildren();
+    const box=document.createElement('div');
+    box.className='ctg-spatial-empty error';
+    const title=document.createElement('strong');
+    title.textContent='Could not complete that place search';
+    const copy=document.createElement('p');
+    copy.textContent=message;
+    box.append(title,copy);
+    host.append(box);
+  }
+
+  function geometrySliceForTrip(geometry,startProjection,endProjection){
+    if(!geometry?.length)return[];
+    const start=Math.max(0,Math.min(geometry.length-2,startProjection.segmentIndex||0));
+    const end=Math.max(start+1,Math.min(geometry.length-1,(endProjection.segmentIndex||start)+1));
+    return[
+      startProjection.coord,
+      ...geometry.slice(start+1,end),
+      endProjection.coord
+    ];
+  }
+
+  function drawWalkingConnector(fromCoord,toCoord,label){
+    const distance=haversineMeters(fromCoord,toCoord);
+    if(distance<35)return;
+    L.polyline([fromCoord,toCoord],{
+      color:'#64748b',
+      weight:3,
+      opacity:.82,
+      dashArray:'6 7',
+      lineCap:'round',
+      interactive:true
+    }).bindTooltip(`${label} · ${formatDistance(distance)}`,{
+      className:'ctg-route-tooltip',
+      sticky:true
+    }).addTo(focusLayer);
+  }
+
+  function addWaitDropMarker(kind,coord,name){
+    const wait=kind==='wait';
+    L.marker(coord,{
+      icon:boardDropIcon(wait?'wait':'drop',wait?'WAIT HERE':'DROP HERE'),
+      zIndexOffset:1200
+    }).bindTooltip(`${wait?'Wait here':'Drop here'} · ${name}`,{
+      direction:'top',
+      className:'ctg-route-tooltip'
+    }).addTo(focusLayer);
+  }
+
+  async function showSpatialDirect(itinerary,plan,{scroll=true}={}){
+    const route=itinerary.entry.route;
+    const serial=++focusRequestSerial;
+    focusLayer.clearLayers();
+    staticPolylineOpacity(true);
+    focusedRouteId=route.id;
+    focusedTransfer=null;
+    focusedBounds=null;
+    highlightedSegmentIndex=-1;
+
+    updateSheet({
+      route,
+      title:`${route.code} · ${plan.origin.label} → ${plan.destination.label}`,
+      subtitle:'Matching boarding and drop points to the road-following route…',
+      color:colorFor(route.mode),
+      loading:true
+    });
+
+    const resolved=await resolveRoutePath(route,{direction:itinerary.entry.direction});
+    if(serial!==focusRequestSerial)return;
+    const board=nearestProjectionOnPolyline(plan.origin.coord,resolved.geometry);
+    const drop=nearestProjectionOnPolyline(plan.destination.coord,resolved.geometry);
+
+    focusLayer.clearLayers();
+    drawResolvedRoute(route,resolved,colorFor(route.mode),{
+      waitCoord:board.coord,
+      dropCoord:drop.coord,
+      waitName:itinerary.boardName,
+      dropName:itinerary.dropName
+    });
+    drawWalkingConnector(plan.origin.coord,board.coord,'Walk to boarding point');
+    drawWalkingConnector(drop.coord,plan.destination.coord,'Walk to destination');
+
+    const rideSlice=geometrySliceForTrip(resolved.geometry,board,drop);
+    const boundsPoints=[...rideSlice,plan.origin.coord,plan.destination.coord];
+    focusedBounds=L.latLngBounds(boundsPoints);
+    activeRouteView={route,resolved,direction:itinerary.entry.direction,from:plan.origin.label,to:plan.destination.label};
+
+    updateSheet({
+      route,
+      resolved,
+      title:`${route.code} · ${plan.origin.label} → ${plan.destination.label}`,
+      subtitle:`Wait near ${itinerary.boardName} · drop near ${itinerary.dropName} · ${createWalkText(board.distance+drop.distance)} total walking`,
+      color:colorFor(route.mode)
+    });
+    setGeometryLabel('Red = recommended boarding · green = recommended drop-off · dashed gray = walking connection');
+    fitFocused();
+    if(scroll)document.getElementById('map-section')?.scrollIntoView({behavior:'smooth',block:'start'});
+  }
+
+  async function showSpatialTransfer(itinerary,plan,{scroll=true}={}){
+    const serial=++focusRequestSerial;
+    focusLayer.clearLayers();
+    staticPolylineOpacity(true);
+    focusedRouteId=null;
+    focusedTransfer={spatial:true};
+    focusedBounds=null;
+    activeRouteView=null;
+    highlightedSegmentIndex=-1;
+
+    updateSheet({
+      transfer:itinerary.transferName,
+      title:`${itinerary.first.route.code} → ${itinerary.second.route.code}`,
+      subtitle:'Matching both rides and transfer point to the road network…',
+      color:'#7c4dff',
+      loading:true
+    });
+
+    const [firstResolved,secondResolved]=await Promise.all([
+      resolveRoutePath(itinerary.first.route,{direction:itinerary.first.direction}),
+      resolveRoutePath(itinerary.second.route,{direction:itinerary.second.direction})
+    ]);
+    if(serial!==focusRequestSerial)return;
+
+    const board=nearestProjectionOnPolyline(plan.origin.coord,firstResolved.geometry);
+    const transferA=nearestProjectionOnPolyline(itinerary.connection.aCoord,firstResolved.geometry);
+    const transferB=nearestProjectionOnPolyline(itinerary.connection.bCoord,secondResolved.geometry);
+    const drop=nearestProjectionOnPolyline(plan.destination.coord,secondResolved.geometry);
+
+    focusLayer.clearLayers();
+    drawResolvedRoute(itinerary.first.route,firstResolved,colorFor(itinerary.first.route.mode),{skipPins:true});
+    drawResolvedRoute(itinerary.second.route,secondResolved,colorFor(itinerary.second.route.mode),{skipPins:true});
+    addWaitDropMarker('wait',board.coord,itinerary.boardName);
+    addWaitDropMarker('drop',drop.coord,itinerary.dropName);
+
+    const transferMid=[
+      (transferA.coord[0]+transferB.coord[0])/2,
+      (transferA.coord[1]+transferB.coord[1])/2
+    ];
+    L.marker(transferMid,{icon:pinIcon('transfer','↻'),zIndexOffset:1150})
+      .bindTooltip(`Transfer near ${itinerary.transferName}`,{direction:'top',className:'ctg-route-tooltip'})
+      .addTo(focusLayer);
+
+    drawWalkingConnector(plan.origin.coord,board.coord,'Walk to first ride');
+    drawWalkingConnector(transferA.coord,transferB.coord,'Transfer walk');
+    drawWalkingConnector(drop.coord,plan.destination.coord,'Walk to destination');
+
+    const firstSlice=geometrySliceForTrip(firstResolved.geometry,board,transferA);
+    const secondSlice=geometrySliceForTrip(secondResolved.geometry,transferB,drop);
+    focusedBounds=L.latLngBounds([...firstSlice,...secondSlice,plan.origin.coord,plan.destination.coord]);
+
+    updateSheet({
+      transfer:itinerary.transferName,
+      title:`${itinerary.first.route.code} → ${itinerary.second.route.code}`,
+      subtitle:`Wait near ${itinerary.boardName} · transfer near ${itinerary.transferName} · drop near ${itinerary.dropName}`,
+      color:'#7c4dff',
+      loading:false,
+      allowDirection:false
+    });
+    setGeometryLabel('Red = board · purple = transfer · green = drop · dashed gray = walking connection');
+    fitFocused();
+    if(scroll)document.getElementById('map-section')?.scrollIntoView({behavior:'smooth',block:'start'});
+  }
+
+  function showSpatialItinerary(itinerary,plan,options={}){
+    return itinerary.rides===1
+      ?showSpatialDirect(itinerary,plan,options)
+      :showSpatialTransfer(itinerary,plan,options);
+  }
+
+  async function runSpatialPlanner(){
+    const fromInput=document.getElementById('fromInput');
+    const toInput=document.getElementById('toInput');
+    if(!fromInput||!toInput)return;
+    const from=fromInput.value.trim();
+    const to=toInput.value.trim();
+    if(!from||!to){
+      renderPlannerError('Enter both an origin and destination.');
+      return;
+    }
+
+    const serial=++spatialPlannerSerial;
+    renderPlannerLoading(from,to);
+
+    try{
+      const [origin,destination]=await Promise.all([
+        resolveInputPlace(fromInput),
+        resolveInputPlace(toInput)
+      ]);
+      if(serial!==spatialPlannerSerial)return;
+
+      const itineraries=findSpatialItineraries(origin,destination);
+      const plan={origin,destination,itineraries};
+      activeSpatialPlan=plan;
+      renderSpatialPlanner(plan);
+
+      if(itineraries.length){
+        showSpatialItinerary(itineraries[0],plan,{scroll:false});
+      }else{
+        clearFocus();
+      }
+    }catch(error){
+      if(serial!==spatialPlannerSerial)return;
+      renderPlannerError(error?.message||'Place search failed. Try a nearby landmark or barangay.');
+    }
+  }
+
   function currentPlan(){
     const from=document.getElementById('fromInput')?.value.trim()||'';
     const to=document.getElementById('toInput')?.value.trim()||'';
