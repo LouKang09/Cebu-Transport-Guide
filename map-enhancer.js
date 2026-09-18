@@ -1659,6 +1659,18 @@
     return best.name;
   }
 
+  function nearestRouteAccessName(entry,kind,coord){
+    const labels=Array.isArray(entry.route?.[kind])?entry.route[kind]:[];
+    let best={distance:Infinity,name:''};
+    labels.forEach(label=>{
+      const point=coordForRouteLabel(label);
+      if(!point)return;
+      const distance=haversineMeters(coord,point);
+      if(distance<best.distance)best={distance,name:label};
+    });
+    return best.name||nearestWaypointName(entry,coord);
+  }
+
   function nearestCatalogName(coord,maxMeters=850){
     let best={distance:Infinity,name:''};
     catalog.forEach(item=>{
@@ -1687,8 +1699,8 @@
         entry,
         board,
         drop,
-        boardName:nearestWaypointName(entry,board.coord),
-        dropName:nearestWaypointName(entry,drop.coord),
+        boardName:nearestRouteAccessName(entry,'wait',board.coord),
+        dropName:nearestRouteAccessName(entry,'drop',drop.coord),
         score:board.distance*1.12+drop.distance*1.2+220
       });
     }
@@ -1727,8 +1739,8 @@
           connection,
           board:first.originProjection,
           drop:second.destinationProjection,
-          boardName:nearestWaypointName(first,first.originProjection.coord),
-          dropName:nearestWaypointName(second,second.destinationProjection.coord),
+          boardName:nearestRouteAccessName(first,'wait',first.originProjection.coord),
+          dropName:nearestRouteAccessName(second,'drop',second.destinationProjection.coord),
           transferName:nearestCatalogName(transferMid),
           score:first.originProjection.distance*1.1+
             second.destinationProjection.distance*1.2+
