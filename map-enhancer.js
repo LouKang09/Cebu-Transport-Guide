@@ -376,11 +376,12 @@
 
     if(roadFollowed&&segments.length){
       segments.forEach(segment=>{
+        const segmentColor=opts.segmentColorMode==='base'?color:segment.color;
         L.polyline(segment.geometry,{color:'#fff',weight:11,opacity:.96,lineCap:'round',lineJoin:'round',interactive:false}).addTo(focusLayer);
-        segment.layer=L.polyline(segment.geometry,{color:segment.color,weight:6.5,opacity:1,lineCap:'round',lineJoin:'round'})
+        segment.layer=L.polyline(segment.geometry,{color:segmentColor,weight:6.5,opacity:1,lineCap:'round',lineJoin:'round'})
           .bindTooltip(`${segment.from.name} → ${segment.to.name}`,{className:'ctg-route-tooltip',sticky:true})
           .addTo(focusLayer);
-        addDirectionArrows(segment.geometry,segment.color);
+        addDirectionArrows(segment.geometry,segmentColor);
       });
     }
 
@@ -595,8 +596,8 @@
     if(serial!==focusRequestSerial)return;
 
     focusLayer.clearLayers();
-    drawResolvedRoute(a,leg1,colorFor(a.mode),{skipPins:true,from,to:common});
-    drawResolvedRoute(b,leg2,colorFor(b.mode),{skipPins:true,from:common,to});
+    drawResolvedRoute(a,leg1,colorFor(a.mode),{skipPins:true,segmentColorMode:'base',from,to:common});
+    drawResolvedRoute(b,leg2,colorFor(b.mode),{skipPins:true,segmentColorMode:'base',from:common,to});
 
     const allGeometry=[...leg1.geometry,...leg2.geometry];
     const start=leg1.via[0],end=leg2.via.at(-1);
