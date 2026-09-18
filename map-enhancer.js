@@ -57,7 +57,8 @@
     ['Bulacao',10.2642,123.8517],['Punta',10.2871,123.8790],['SRP',10.2818,123.8814],['SM Seaside',10.2818,123.8814],['Il Corso',10.2528,123.8814],
     ['Tabunok',10.2597,123.8465],['Talisay',10.2447,123.8494],['Minglanilla',10.2450,123.7964],['Naga',10.2089,123.7580],['Carcar',10.1060,123.6402],
     ['Mactan-Cebu International Airport',10.3075,123.9794],['MCIA',10.3075,123.9794],['Cebu Doctors University',10.3361,123.9351],['USC Downtown',10.2978,123.8980],['USJ-R',10.2959,123.8999],
-    ['Landers Superstore Cebu',10.32072,123.90958],['Landers',10.32072,123.90958],['Kasambagan',10.3243,123.9101],['Echavez',10.3056,123.89988]
+    ['Landers Superstore Cebu',10.32072,123.90958],['Landers',10.32072,123.90958],['Kasambagan',10.3243,123.9101],['Echavez',10.3056,123.89988],
+    ['Carmen Village',10.260813,123.822988],['Carmen Village Poblacion Talisay',10.260813,123.822988],['Carmen Village, Poblacion, Talisay',10.260813,123.822988]
   ];
 
   const getRoutes=()=>typeof ROUTES!=='undefined'?ROUTES:[];
