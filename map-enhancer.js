@@ -246,7 +246,7 @@
     return bestIndex;
   }
 
-  function splitGeometryByWaypoints(geometry,waypoints){
+  function splitGeometryByWaypoints(geometry,waypoints,colorKey='route'){
     if(geometry.length<2||waypoints.length<2)return[];
     const indices=[];
     let cursor=0;
@@ -268,7 +268,7 @@
         from,
         to:waypoints[index+1],
         geometry:segmentGeometry.length>1?segmentGeometry:[from.coord,waypoints[index+1].coord],
-        color:uniqueSegmentColor(waypoints.map(item=>item.name).join('|'),index,waypoints.length-1),
+        color:uniqueSegmentColor(`${colorKey}|${waypoints.map(item=>item.name).join('|')}`,index,waypoints.length-1),
         layer:null
       };
     });
@@ -285,7 +285,7 @@
       ...routeInfo,
       via,
       geometry,
-      segments:road.roadFollowed?splitGeometryByWaypoints(geometry,waypoints):[],
+      segments:road.roadFollowed?splitGeometryByWaypoints(geometry,waypoints,`${route.id||route.code}|${route.code}|${routeInfo.profile.direction}`):[],
       distance:road.distance,
       roadFollowed:road.roadFollowed,
       error:road.error
@@ -301,6 +301,12 @@
 
   const escapeHtml=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
   const pinIcon=(kind,label)=>L.divIcon({className:'',html:`<div class="ctg-nav-pin ${kind}"><span>${escapeHtml(label)}</span></div>`,iconSize:[34,34],iconAnchor:[10,31]});
+  const boardDropIcon=(kind,label)=>L.divIcon({
+    className:'',
+    html:`<div class="ctg-board-drop ${kind}"><span class="ctg-board-drop-dot"></span><strong>${escapeHtml(label)}</strong></div>`,
+    iconSize:[92,34],
+    iconAnchor:[16,28]
+  });
   const stopIcon=color=>L.divIcon({className:'',html:`<span class="ctg-route-stop" style="--route-color:${color}"></span>`,iconSize:[13,13],iconAnchor:[6.5,6.5]});
   const arrowIcon=(color,angle)=>L.divIcon({className:'',html:`<span class="ctg-direction-arrow" style="--route-color:${color};transform:rotate(${angle}deg)">➜</span>`,iconSize:[28,28],iconAnchor:[14,14]});
   const waypointIcon=(index,color,name)=>L.divIcon({
@@ -558,11 +564,28 @@
 
     if(!opts.skipPins){
       waypoints.forEach((waypoint,index)=>{
-        const color=index===0?(segments[0]?.color||color):(segments[index-1]?.color||segments.at(-1)?.color||color);
-        L.marker(waypoint.coord,{icon:waypointIcon(index,color,waypoint.name),zIndexOffset:850+index})
+        if(index===0||index===waypoints.length-1)return;
+        const waypointColor=segments[index-1]?.color||segments.at(-1)?.color||color;
+        L.marker(waypoint.coord,{icon:waypointIcon(index,waypointColor,waypoint.name),zIndexOffset:850+index})
           .bindTooltip(waypoint.name,{direction:'top',className:'ctg-route-tooltip'})
           .addTo(focusLayer);
       });
+
+      const waitPoint=opts.waitCoord||waypoints[0]?.coord;
+      const dropPoint=opts.dropCoord||waypoints.at(-1)?.coord;
+      const waitName=opts.waitName||waypoints[0]?.name||'Boarding point';
+      const dropName=opts.dropName||waypoints.at(-1)?.name||'Drop-off point';
+
+      if(waitPoint){
+        L.marker(waitPoint,{icon:boardDropIcon('wait','WAIT HERE'),zIndexOffset:1100})
+          .bindTooltip(`Wait here · ${waitName}`,{direction:'top',className:'ctg-route-tooltip'})
+          .addTo(focusLayer);
+      }
+      if(dropPoint){
+        L.marker(dropPoint,{icon:boardDropIcon('drop','DROP HERE'),zIndexOffset:1090})
+          .bindTooltip(`Drop here · ${dropName}`,{direction:'top',className:'ctg-route-tooltip'})
+          .addTo(focusLayer);
+      }
     }
   }
 
