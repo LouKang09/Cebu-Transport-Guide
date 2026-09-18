@@ -78,7 +78,7 @@
     return hit?[hit.lat,hit.lng]:null;
   };
 
-  const routeHas=(route,place)=>route.stops.some(stop=>exactish(place,stop));
+  const routeHas=(route,place)=>['forward','reverse'].some(direction=>baseDirectionProfile(route,direction).stops.some(stop=>exactish(place,stop)));
 
   function baseDirectionProfile(route,direction='forward'){
     const configured=directionProfiles[route.code]?.[direction];
@@ -506,6 +506,7 @@
     focusedRouteId=id;
     focusedTransfer=null;
     focusedBounds=null;
+    activeRouteView=null;
     highlightedSegmentIndex=-1;
 
     const preview=routeWaypoints(route,{from,to,direction});
@@ -575,6 +576,8 @@
     focusedRouteId=null;
     focusedTransfer={aId,bId,common,from,to};
     focusedBounds=null;
+    activeRouteView=null;
+    highlightedSegmentIndex=-1;
 
     updateSheet({
       transfer:common,
@@ -682,7 +685,8 @@
     activeRouteView.resolved.segments.forEach((segment,segmentIndex)=>{
       if(!segment.layer)return;
       const active=segmentIndex===index;
-      segment.layer.setStyle({weight:active?9.5:6.5,opacity:active?1:.76});
+      const hasActive=index>=0;
+      segment.layer.setStyle({weight:active?9.5:6.5,opacity:hasActive?(active?1:.76):1});
       if(active)segment.layer.bringToFront();
     });
     highlightedSegmentIndex=index;
