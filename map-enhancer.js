@@ -375,12 +375,60 @@
     iconAnchor:[14,14]
   });
 
+  function simplifyMapGuidePanel(){
+    const panel=document.querySelector('.map-panel');
+    if(!panel)return;
+
+    const heading=[...panel.querySelectorAll('h1,h2,h3,h4,strong')]
+      .find(node=>normalize(node.textContent)==='map layers');
+    if(heading)heading.textContent='Route guide';
+
+    const intro=[...panel.children].find(node=>node.tagName==='P');
+    if(intro)intro.textContent='Use the map symbols below and, after selecting a route, tap a colored route section to zoom to that part of the trip.';
+
+    const modeLabels=new Set(Object.values(modeConfig).map(config=>normalize(config.label)));
+    const legacyButtons=[...panel.querySelectorAll('button')].filter(button=>modeLabels.has(normalize(button.textContent)));
+    const candidateParents=new Set();
+
+    legacyButtons.forEach(button=>{
+      if(button.parentElement&&button.parentElement!==panel)candidateParents.add(button.parentElement);
+      button.remove();
+    });
+
+    // Remove wrappers that existed only to hold the old layer toggle buttons.
+    [...candidateParents].forEach(parent=>{
+      if(parent.isConnected&&!parent.textContent.trim()&&!parent.children.length)parent.remove();
+    });
+
+    // A shared wrapper may become empty only after every button has been removed.
+    [...panel.querySelectorAll('div,section')].reverse().forEach(node=>{
+      if(node.classList.contains('ctg-sidebar-route-sections'))return;
+      if(node.querySelector('.ctg-sidebar-route-sections'))return;
+      if(!node.textContent.trim()&&!node.children.length)node.remove();
+    });
+
+    panel.classList.add('ctg-route-guide-panel');
+  }
+
+  function removeLegacyOverviewPolylines(){
+    if(!map||!window.L)return;
+    const removable=[];
+    map.eachLayer(layer=>{
+      if(layer instanceof L.Polyline){
+        if(focusLayer?.hasLayer(layer)||liveLayer?.hasLayer(layer))return;
+        removable.push(layer);
+      }
+    });
+    removable.forEach(layer=>map.removeLayer(layer));
+  }
+
   function removeLegacyFloatingLegend(){
     document.querySelectorAll('.ctg-map-legend,.ctg-legend-toggle').forEach(node=>node.remove());
   }
 
   function createMapChrome(){
     removeLegacyFloatingLegend();
+    simplifyMapGuidePanel();
     const card=document.querySelector('.map-card');
     if(!card||card.querySelector('.ctg-map-controls'))return;
     card.insertAdjacentHTML('beforeend',`
@@ -446,8 +494,7 @@
       reset.textContent='Cebu overview';
       reset.addEventListener('click',()=>setTimeout(resetOverview,0));
     }
-    const panelText=document.querySelector('.map-panel > p');
-    if(panelText)panelText.textContent='Tap Map on a route to see color-coded major locations, switch outbound/return direction, or opt in to live GPS route tracking.';
+    simplifyMapGuidePanel();
     ensureSidebarRouteSections();
   }
 
@@ -2287,9 +2334,11 @@
     map=window.__cebuTransportMap;
     if(!map||!window.L)return;
     removeLegacyFloatingLegend();
+    simplifyMapGuidePanel();
     catalog=coordCatalog();
     focusLayer=L.layerGroup().addTo(map);
     liveLayer=L.layerGroup().addTo(map);
+    removeLegacyOverviewPolylines();
     L.control.scale({metric:true,imperial:false,maxWidth:110,position:'bottomleft'}).addTo(map);
     createMapChrome();
     map.on('dragstart',()=>{
