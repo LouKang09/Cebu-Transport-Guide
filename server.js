@@ -36,12 +36,12 @@ function buildIndex() {
 
   // The navigation-map layer is kept separate so the original transport atlas
   // remains easy to roll back while route visualization evolves independently.
-  html = html.replace('</head>', '<link rel="stylesheet" href="/map-enhancer.css?v=10" /></head>');
+  html = html.replace('</head>', '<link rel="stylesheet" href="/map-enhancer.css?v=11" /></head>');
   html = html.replace(
     '<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>',
-    '<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script><script src="/map-enhancer-pre.js?v=10"></script>'
+    '<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script><script src="/map-enhancer-pre.js?v=11"></script>'
   );
-  html = html.replace('</body>', '<script src="/map-enhancer.js?v=10"></script></body>');
+  html = html.replace('</body>', '<script src="/map-enhancer.js?v=11"></script></body>');
   return html;
 }
 
