@@ -101,9 +101,9 @@
   let spatialIndexPromise=null;
   let spatialPlannerSerial=0;
   let activeSpatialPlan=null;
-  const SPATIAL_BOARD_MAX_METERS=1400;
-  const SPATIAL_DROP_MAX_METERS=2300;
-  const SPATIAL_TRANSFER_MAX_METERS=700;
+  const SPATIAL_BOARD_MAX_METERS=1600;
+  const SPATIAL_DROP_MAX_METERS=3600;
+  const SPATIAL_TRANSFER_MAX_METERS=750;
 
   const coordFor=name=>{
     const q=normalize(name);if(!q)return null;
@@ -1718,6 +1718,7 @@
   function renderSpatialPlanner(plan){
     const host=document.getElementById('plannerResults');
     if(!host)return;
+    host.classList.add('show');
     host.replaceChildren();
 
     const summary=document.createElement('div');
@@ -1750,7 +1751,9 @@
       top.className='ctg-spatial-result-top';
       const badge=document.createElement('span');
       badge.className='ctg-spatial-ride-count';
-      badge.textContent=itinerary.rides===1?'1 ride':'2 rides';
+      badge.textContent=itinerary.rides===1
+        ?(itinerary.drop.distance>1200?'1 ride + local':'1 ride')
+        :'2 rides';
       const title=document.createElement('strong');
       if(itinerary.rides===1){
         title.textContent=`${itinerary.entry.route.code} · ${routeModeLabel(itinerary.entry.route)}`;
@@ -1785,7 +1788,13 @@
       if(itinerary.rides===1){
         addStep('walk',`Go to ${itinerary.boardName}`,createWalkText(itinerary.board.distance));
         addStep('ride',`Ride ${itinerary.entry.route.code} ${itinerary.entry.direction==='reverse'?'return':'outbound'}`,itinerary.entry.profile.label||itinerary.entry.route.corridor);
-        addStep('drop',`Drop near ${itinerary.dropName}`,`${createWalkText(itinerary.drop.distance)} to destination`);
+        addStep(
+          'drop',
+          `Drop near ${itinerary.dropName}`,
+          itinerary.drop.distance>1200
+            ?`${formatDistance(itinerary.drop.distance)} remaining — use a local feeder/tricycle/walk if available`
+            :`${createWalkText(itinerary.drop.distance)} to destination`
+        );
       }else{
         addStep('walk',`Go to ${itinerary.boardName}`,createWalkText(itinerary.first.originProjection.distance));
         addStep('ride',`Ride ${itinerary.first.route.code}`,itinerary.first.profile.label||itinerary.first.route.corridor);
@@ -1811,6 +1820,7 @@
   function renderPlannerLoading(from,to){
     const host=document.getElementById('plannerResults');
     if(!host)return;
+    host.classList.add('show');
     host.replaceChildren();
     const loading=document.createElement('div');
     loading.className='ctg-spatial-loading';
@@ -1828,6 +1838,7 @@
   function renderPlannerError(message){
     const host=document.getElementById('plannerResults');
     if(!host)return;
+    host.classList.add('show');
     host.replaceChildren();
     const box=document.createElement('div');
     box.className='ctg-spatial-empty error';
@@ -2155,10 +2166,20 @@
       runSpatialPlanner();
     },true);
 
-    document.querySelectorAll('.quick-chip').forEach(button=>button.addEventListener('click',()=>setTimeout(()=>{
+    document.querySelectorAll('.quick-chip').forEach(button=>button.addEventListener('click',event=>{
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      fromInput.value=button.dataset.from||'';
+      toInput.value=button.dataset.to||'';
       clearPlaceSelection(fromInput);
       clearPlaceSelection(toInput);
-    },0)));
+      runSpatialPlanner();
+    },true));
+
+    document.getElementById('swapBtn')?.addEventListener('click',()=>{
+      clearPlaceSelection(fromInput);
+      clearPlaceSelection(toInput);
+    });
 
     document.getElementById('routeSearch')?.addEventListener('input',()=>setTimeout(resetRouteScroll,0));
     document.getElementById('regionFilter')?.addEventListener('change',()=>setTimeout(resetRouteScroll,0));
