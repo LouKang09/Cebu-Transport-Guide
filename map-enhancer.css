@@ -735,3 +735,24 @@ body.dark .ctg-legend-line{
   visibility:hidden!important;
   pointer-events:none!important;
 }
+
+
+/* Route Guide: the old schematic map-layer toggles have been removed. */
+.ctg-route-guide-panel > p{
+  margin-bottom:14px;
+}
+.ctg-route-guide-panel .ctg-sidebar-route-sections{
+  margin-top:16px;
+}
+.ctg-route-guide-panel .ctg-sidebar-route-divider{
+  margin-bottom:14px;
+}
+.ctg-route-guide-panel{
+  align-self:start;
+}
+
+@media(max-width:640px){
+  .ctg-route-guide-panel > p{
+    margin-bottom:10px;
+  }
+}
