@@ -35,7 +35,7 @@
   const directionProfiles={
     '04L':{
       forward:{label:'Lahug → Ayala → SM City Cebu',stops:['Lahug','Ayala','SM City Cebu'],verified:true},
-      reverse:{label:'SM City Cebu → Landers → Kasambagan → Lahug',stops:['SM City Cebu','Landers Superstore Cebu','Kasambagan','Lahug'],verified:true}
+      reverse:{label:'SM City Cebu → Landers → JY Square → Lahug',stops:['SM City Cebu','Landers Superstore Cebu','JY Square','Lahug'],verified:true}
     },
     '13C':{
       forward:{label:'Talamban → Country Mall → Ayala → Echavez → Colon',stops:['Talamban','Gaisano Country Mall','Ayala','Echavez','Colon'],verified:true},
@@ -81,12 +81,28 @@
   let expandTimer=null;
   let activeRouteView=null;
   let liveLayer=null;
+  let rerouteLayer=null;
   let liveWatchId=null;
   let liveMarker=null;
   let liveAccuracyCircle=null;
   let lastLivePosition=null;
   let followLiveLocation=true;
   let highlightedSegmentIndex=-1;
+  let rerouteState={
+    resolved:null,
+    baseWaypointIndex:1,
+    nextWaypointIndex:1,
+    offRouteSamples:0,
+    deviationStartedAt:0,
+    deviationStartCoord:null,
+    lastRerouteAt:0,
+    inFlight:false,
+    generation:0
+  };
+  const AUTO_REROUTE_OFF_SAMPLES=3;
+  const AUTO_REROUTE_COOLDOWN_MS=10000;
+  const AUTO_REROUTE_MIN_MOVE_METERS=35;
+  const AUTO_REROUTE_MAX_ACCURACY=85;
   let gpsSamples=[];
   let gpsWarmupStartedAt=0;
   let lastReliablePosition=null;
