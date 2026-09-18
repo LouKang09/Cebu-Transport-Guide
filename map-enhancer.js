@@ -560,6 +560,50 @@
     });
   }
 
+  function coordForRouteLabel(label){
+    const variants=[
+      String(label||''),
+      ...String(label||'').split(/[\/,·]/)
+    ].map(value=>value
+      .replace(/\b(loading|terminal|area|corridor|side|district|route)\b/gi,' ')
+      .replace(/\s+/g,' ')
+      .trim()
+    ).filter(Boolean);
+
+    for(const variant of variants){
+      const coord=coordFor(variant);
+      if(coord)return coord;
+    }
+    return null;
+  }
+
+  function drawRouteWaitDropDots(route){
+    const draw=(labels,kind)=>{
+      const seen=new Set();
+      (Array.isArray(labels)?labels:[]).slice(0,8).forEach(label=>{
+        const coord=coordForRouteLabel(label);
+        if(!coord)return;
+        const key=`${coord[0].toFixed(5)}|${coord[1].toFixed(5)}|${kind}`;
+        if(seen.has(key))return;
+        seen.add(key);
+        const wait=kind==='wait';
+        L.circleMarker(coord,{
+          radius:6,
+          color:'#fff',
+          weight:2.5,
+          fillColor:wait?'#ef4444':'#10b981',
+          fillOpacity:1,
+          opacity:1
+        }).bindTooltip(`${wait?'Wait here':'Drop here'} · ${label}`,{
+          direction:'top',
+          className:'ctg-route-tooltip'
+        }).addTo(focusLayer);
+      });
+    };
+    draw(route.wait,'wait');
+    draw(route.drop,'drop');
+  }
+
   function drawResolvedRoute(route,resolved,color=colorFor(route.mode),opts={}){
     const {waypoints,segments,roadFollowed}=resolved;
 
@@ -575,6 +619,7 @@
     }
 
     if(!opts.skipPins){
+      drawRouteWaitDropDots(route);
       waypoints.forEach((waypoint,index)=>{
         if(index===0||index===waypoints.length-1)return;
         const waypointColor=segments[index-1]?.color||segments.at(-1)?.color||color;
