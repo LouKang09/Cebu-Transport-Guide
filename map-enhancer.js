@@ -375,7 +375,12 @@
     iconAnchor:[14,14]
   });
 
+  function removeLegacyFloatingLegend(){
+    document.querySelectorAll('.ctg-map-legend,.ctg-legend-toggle').forEach(node=>node.remove());
+  }
+
   function createMapChrome(){
+    removeLegacyFloatingLegend();
     const card=document.querySelector('.map-card');
     if(!card||card.querySelector('.ctg-map-controls'))return;
     card.insertAdjacentHTML('beforeend',`
@@ -2281,6 +2286,7 @@
   function start(){
     map=window.__cebuTransportMap;
     if(!map||!window.L)return;
+    removeLegacyFloatingLegend();
     catalog=coordCatalog();
     focusLayer=L.layerGroup().addTo(map);
     liveLayer=L.layerGroup().addTo(map);
