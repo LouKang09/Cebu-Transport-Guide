@@ -382,30 +382,10 @@
       <div class="ctg-map-top" aria-live="polite"><div class="ctg-trip-summary" hidden><span class="ctg-trip-dot"></span><span class="ctg-trip-copy"><small class="ctg-trip-eyebrow">Selected route</small><strong class="ctg-trip-title">Route</strong></span><span class="ctg-route-loading" hidden aria-hidden="true"></span><button class="ctg-map-close" type="button" aria-label="Clear selected route">×</button></div></div>
       <div class="ctg-map-controls" aria-label="Map controls">
         <button class="ctg-map-fab ctg-location" type="button" aria-label="Share live location" title="Share live location">⌖</button>
-        <button class="ctg-map-fab ctg-legend-toggle" type="button" aria-label="Show map legend" aria-expanded="false" title="Map legend">≡</button>
         <button class="ctg-map-fab ctg-zoom-in" type="button" aria-label="Zoom in">+</button>
         <button class="ctg-map-fab ctg-zoom-out" type="button" aria-label="Zoom out">−</button>
         <button class="ctg-map-fab ctg-fit-route" type="button" aria-label="Fit selected route" title="Fit selected route" hidden>⌗</button>
         <button class="ctg-map-fab ctg-overview" type="button" aria-label="Show Metro Cebu overview" title="Cebu overview">◎</button>
-      </div>
-      <div class="ctg-map-legend" hidden aria-label="Map legend">
-        <div class="ctg-map-legend-head">
-          <div><small>MAP KEY</small><strong>Legend</strong></div>
-          <button class="ctg-map-legend-close" type="button" aria-label="Close map legend">×</button>
-        </div>
-        <div class="ctg-map-legend-symbols">
-          <span><i class="ctg-legend-dot wait"></i>Wait here</span>
-          <span><i class="ctg-legend-dot drop"></i>Drop here</span>
-          <span><i class="ctg-legend-dot you"></i>Your location</span>
-        </div>
-        <div class="ctg-map-legend-divider"></div>
-        <small class="ctg-map-legend-label">TRANSPORT LAYERS</small>
-        <div class="ctg-map-legend-modes"></div>
-        <div class="ctg-map-legend-route" hidden>
-          <div class="ctg-map-legend-divider"></div>
-          <small class="ctg-map-legend-label">SELECTED ROUTE SECTIONS</small>
-          <div class="ctg-map-legend-sections"></div>
-        </div>
       </div>
       <div class="ctg-nav-sheet" hidden>
         <div class="ctg-sheet-handle" aria-hidden="true"></div>
@@ -427,8 +407,6 @@
       <div class="ctg-schematic-label">Road-following estimate from mapped route points</div>`);
 
     card.querySelector('.ctg-location').addEventListener('click',toggleLiveLocation);
-    card.querySelector('.ctg-legend-toggle').addEventListener('click',()=>setMapLegendOpen(card.querySelector('.ctg-map-legend').hidden));
-    card.querySelector('.ctg-map-legend-close').addEventListener('click',()=>setMapLegendOpen(false));
     card.querySelector('.ctg-zoom-in').addEventListener('click',()=>map.zoomIn(.5));
     card.querySelector('.ctg-zoom-out').addEventListener('click',()=>map.zoomOut(.5));
     card.querySelector('.ctg-fit-route').addEventListener('click',fitFocused);
@@ -464,81 +442,39 @@
       reset.addEventListener('click',()=>setTimeout(resetOverview,0));
     }
     const panelText=document.querySelector('.map-panel > p');
-    if(panelText)panelText.textContent='Tap Map on a route to see color-coded major locations, switch outbound/return direction, or opt in to live GPS route tracking. The same legend is now available directly on the map.';
-    buildMapLegendModes();
-    setMapLegendOpen(!matchMedia('(max-width:640px)').matches);
-
-    document.querySelector('.map-panel')?.addEventListener('click',event=>{
-      if(event.target.closest('button'))setTimeout(syncMapLegendModes,0);
-    });
+    if(panelText)panelText.textContent='Tap Map on a route to see color-coded major locations, switch outbound/return direction, or opt in to live GPS route tracking.';
+    ensureSidebarRouteSections();
   }
 
-  function setMapLegendOpen(open){
-    const legend=document.querySelector('.ctg-map-legend');
-    const button=document.querySelector('.ctg-legend-toggle');
-    if(!legend||!button)return;
-    legend.hidden=!open;
-    button.classList.toggle('active',open);
-    button.setAttribute('aria-expanded',open?'true':'false');
-    button.setAttribute('aria-label',open?'Hide map legend':'Show map legend');
-  }
+  function ensureSidebarRouteSections(){
+    const panel=document.querySelector('.map-panel');
+    if(!panel)return null;
 
-  function findSidebarLayerButton(label){
-    const wanted=normalize(label);
-    return [...document.querySelectorAll('.map-panel button')].find(button=>{
-      const text=normalize(button.textContent);
-      return text===wanted||text.includes(wanted)||wanted.includes(text);
-    })||null;
-  }
+    let wrapper=panel.querySelector('.ctg-sidebar-route-sections');
+    if(wrapper)return wrapper;
 
-  function sidebarLayerIsActive(button){
-    if(!button)return true;
-    if(button.getAttribute('aria-pressed')==='false')return false;
-    if(button.matches('.off,.inactive,.disabled,[data-active="false"]'))return false;
-    return true;
-  }
+    wrapper=document.createElement('section');
+    wrapper.className='ctg-sidebar-route-sections';
+    wrapper.hidden=true;
 
-  function syncMapLegendModes(){
-    document.querySelectorAll('.ctg-map-legend-mode[data-mode]').forEach(row=>{
-      const mode=row.dataset.mode;
-      const config=modeConfig[mode];
-      const source=findSidebarLayerButton(config?.label||mode);
-      const active=sidebarLayerIsActive(source);
-      row.classList.toggle('inactive',!active);
-      row.setAttribute('aria-pressed',active?'true':'false');
-    });
-  }
+    const divider=document.createElement('div');
+    divider.className='ctg-sidebar-route-divider';
 
-  function buildMapLegendModes(){
-    const host=document.querySelector('.ctg-map-legend-modes');
-    if(!host)return;
-    host.replaceChildren(...Object.entries(modeConfig).map(([mode,config])=>{
-      const button=document.createElement('button');
-      button.type='button';
-      button.className='ctg-map-legend-mode';
-      button.dataset.mode=mode;
-      button.setAttribute('aria-pressed','true');
-      const swatch=document.createElement('i');
-      swatch.className='ctg-legend-line';
-      swatch.style.setProperty('--legend-color',config.color);
-      const label=document.createElement('span');
-      label.textContent=config.label;
-      button.append(swatch,label);
-      button.addEventListener('click',()=>{
-        const source=findSidebarLayerButton(config.label);
-        if(source){
-          source.click();
-          setTimeout(syncMapLegendModes,0);
-        }
-      });
-      return button;
-    }));
-    syncMapLegendModes();
+    const label=document.createElement('div');
+    label.className='ctg-sidebar-route-label';
+    label.textContent='SELECTED ROUTE SECTIONS';
+
+    const host=document.createElement('div');
+    host.className='ctg-map-legend-sections';
+
+    wrapper.append(divider,label,host);
+    panel.append(wrapper);
+    return wrapper;
   }
 
   function renderMapLegendRouteSections(route,resolved){
-    const wrapper=document.querySelector('.ctg-map-legend-route');
-    const host=document.querySelector('.ctg-map-legend-sections');
+    const wrapper=ensureSidebarRouteSections();
+    const host=wrapper?.querySelector('.ctg-map-legend-sections');
     if(!wrapper||!host)return;
     const segments=resolved?.segments||[];
     if(!route||!segments.length){
