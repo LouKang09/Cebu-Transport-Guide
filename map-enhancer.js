@@ -11,7 +11,22 @@
   const exactish=(a,b)=>{const x=normalize(a),y=normalize(b);return x===y||x.includes(y)||y.includes(x);};
   const colorFor=mode=>modeConfig[mode]?.color||'#64748b';
   const labelFor=mode=>modeConfig[mode]?.label||mode;
-  const segmentPalette=['#2563eb','#0891b2','#0f9f6e','#65a30d','#d97706','#ea580c','#db2777','#7c3aed'];
+  function hashString(value){
+    let hash=2166136261;
+    for(const char of String(value||'')){
+      hash^=char.charCodeAt(0);
+      hash=Math.imul(hash,16777619);
+    }
+    return hash>>>0;
+  }
+
+  function uniqueSegmentColor(routeKey,index,total){
+    const seed=hashString(routeKey)%360;
+    const hue=(seed+(index*137.50776405))%360;
+    const saturation=72+((index*7)%17);
+    const lightness=42+((index*11)%16);
+    return `hsl(${hue.toFixed(1)} ${saturation}% ${lightness}%)`;
+  }
 
   // Direction-specific profiles let return trips use different streets instead of
   // blindly reversing the outbound line. 04L is explicitly configured from the
@@ -70,6 +85,13 @@
   let lastLivePosition=null;
   let followLiveLocation=true;
   let highlightedSegmentIndex=-1;
+  let gpsSamples=[];
+  let gpsWarmupStartedAt=0;
+  let lastReliablePosition=null;
+  const GPS_TARGET_ACCURACY=65;
+  const GPS_MAX_ACCEPTABLE_ACCURACY=140;
+  const GPS_SAMPLE_WINDOW_MS=12000;
+  const GPS_MAX_JUMP_SPEED_MPS=55;
 
   const coordFor=name=>{
     const q=normalize(name);if(!q)return null;
@@ -80,15 +102,36 @@
 
   const routeHas=(route,place)=>['forward','reverse'].some(direction=>baseDirectionProfile(route,direction).stops.some(stop=>exactish(place,stop)));
 
+  function dedupeNames(values){
+    const seen=new Set();
+    return values.filter(value=>{
+      const key=normalize(value);
+      if(!key||seen.has(key))return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function genericMajorLocations(route){
+    const stops=Array.isArray(route.stops)?route.stops.filter(Boolean):[];
+    const landmarks=Array.isArray(route.landmarks)?route.landmarks.filter(Boolean):[];
+    if(stops.length>=3)return dedupeNames(stops);
+    if(stops.length===2)return dedupeNames([stops[0],...landmarks,stops[1]]);
+    if(stops.length===1)return dedupeNames([stops[0],...landmarks]);
+    return dedupeNames(landmarks);
+  }
+
   function baseDirectionProfile(route,direction='forward'){
     const configured=directionProfiles[route.code]?.[direction];
     if(configured)return{...configured,direction};
-    const stops=direction==='reverse'?[...route.stops].reverse():[...route.stops];
+    const forwardStops=genericMajorLocations(route);
+    const stops=direction==='reverse'?[...forwardStops].reverse():forwardStops;
     return{
       direction,
-      label:stops.join(' → '),
+      label:stops.join(' → ')||route.corridor||route.code,
       stops,
-      verified:direction==='forward'
+      verified:direction==='forward',
+      generated:true
     };
   }
 
@@ -225,7 +268,7 @@
         from,
         to:waypoints[index+1],
         geometry:segmentGeometry.length>1?segmentGeometry:[from.coord,waypoints[index+1].coord],
-        color:segmentPalette[index%segmentPalette.length],
+        color:uniqueSegmentColor(waypoints.map(item=>item.name).join('|'),index,waypoints.length-1),
         layer:null
       };
     });
