@@ -595,13 +595,13 @@
     });
   }
 
-  function addDirectionArrows(geometry,color){
-    if(geometry.length<3)return;
+  function addDirectionArrows(geometry,color,targetLayer=focusLayer){
+    if(geometry.length<3||!targetLayer)return;
     const ratios=geometry.length<16?[.48]:[.22,.5,.78];
     ratios.forEach(ratio=>{
       const index=Math.min(geometry.length-2,Math.max(0,Math.floor((geometry.length-1)*ratio)));
       const a=geometry[index],b=geometry[index+1];
-      if(a&&b)L.marker(a,{icon:arrowIcon(color,bearing(a,b)),interactive:false,zIndexOffset:500}).addTo(focusLayer);
+      if(a&&b)L.marker(a,{icon:arrowIcon(color,bearing(a,b)),interactive:false,zIndexOffset:500}).addTo(targetLayer);
     });
   }
 
