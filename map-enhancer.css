@@ -726,3 +726,12 @@ body.dark .ctg-legend-line{
     font-size:9px;
   }
 }
+
+
+/* Defensive cleanup: the legacy floating legend must never render again. */
+.ctg-map-legend,
+.ctg-legend-toggle{
+  display:none!important;
+  visibility:hidden!important;
+  pointer-events:none!important;
+}
