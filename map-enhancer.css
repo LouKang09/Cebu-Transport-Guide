@@ -13,3 +13,92 @@
 body.dark .ctg-trip-summary,body.dark .ctg-nav-sheet,body.dark .ctg-map-fab{border-color:rgba(255,255,255,.12)}body.dark .leaflet-control-scale-line{background:rgba(15,27,53,.9)!important;color:#fff!important}body.dark .leaflet-control-attribution{background:rgba(15,27,53,.76)!important;color:#cbd5e1!important}body.dark .leaflet-control-attribution a{color:#b9d2ff!important}
 @media(max-width:960px){.map-card,#map{height:620px;min-height:620px}.ctg-map-top{right:72px}.ctg-map-controls{right:12px;top:12px}.ctg-map-fab{width:42px;height:42px}}
 @media(max-width:640px){.map-card{border-radius:20px}.map-card,#map{height:590px;min-height:590px}.ctg-map-top{top:10px;left:10px;right:64px}.ctg-trip-summary{padding:9px 8px 9px 10px;border-radius:14px}.ctg-trip-copy strong{font-size:12px}.ctg-map-controls{top:10px;right:10px;gap:6px}.ctg-map-fab{width:42px;height:42px;border-radius:13px}.ctg-nav-sheet{left:8px;right:8px;bottom:8px;border-radius:20px;padding:9px 12px 12px}.ctg-sheet-handle{display:block}.ctg-sheet-badge{min-width:54px;height:44px;border-radius:13px}.ctg-sheet-copy strong{font-size:13px}.ctg-sheet-copy small{font-size:8px}.ctg-sheet-actions{margin-top:9px}.ctg-schematic-label{left:10px;bottom:10px}.ctg-nav-sheet:not([hidden])~.ctg-schematic-label{display:none}.result-route{grid-template-columns:auto 1fr}.ctg-result-actions{grid-column:1/-1;justify-content:flex-end}.ctg-route-map-btn{padding:7px 10px}}
+
+
+/* Scrollable route book: keep the page compact while every matching route remains reachable. */
+.routes-section{min-width:0}
+#routeGrid.route-grid{
+  max-height:660px;
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  -webkit-overflow-scrolling:touch;
+  scrollbar-gutter:stable;
+  scroll-snap-type:y proximity;
+  align-content:start;
+  padding:2px 8px 8px 2px;
+}
+#routeGrid.route-grid .route-card{scroll-snap-align:start}
+#routeGrid.route-grid::-webkit-scrollbar{width:9px}
+#routeGrid.route-grid::-webkit-scrollbar-track{background:transparent}
+#routeGrid.route-grid::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--muted) 35%,transparent);border-radius:99px;border:2px solid transparent;background-clip:padding-box}
+#loadMoreBtn{display:none!important}
+
+/* Loading state while route waypoints are matched to the road network. */
+.ctg-route-loading{
+  width:18px;height:18px;border-radius:50%;flex:none;
+  border:2px solid color-mix(in srgb,var(--muted) 28%,transparent);
+  border-top-color:var(--blue);
+  animation:ctg-route-spin .75s linear infinite
+}
+.ctg-route-loading[hidden]{display:none}
+@keyframes ctg-route-spin{to{transform:rotate(360deg)}}
+
+.ctg-sheet-actions button{min-height:42px}
+.ctg-route-map-btn,.ctg-result-map-btn{min-height:38px}
+.ctg-nav-sheet{max-width:760px;margin-inline:auto}
+
+@media(max-width:960px){
+  #routeGrid.route-grid{max-height:620px}
+}
+
+@media(max-width:640px){
+  .map-card,#map{height:min(68vh,540px);min-height:480px}
+  .ctg-map-fab{width:46px;height:46px;border-radius:14px}
+  .ctg-map-top{right:68px}
+  .ctg-trip-summary{align-items:center;min-height:48px}
+  .ctg-trip-copy strong{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25}
+  .ctg-map-close{width:40px;height:40px}
+  .ctg-nav-sheet{padding:9px 10px 10px}
+  .ctg-sheet-row{align-items:flex-start}
+  .ctg-sheet-copy strong{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+  .ctg-sheet-copy small{line-height:1.35}
+  .ctg-sheet-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .ctg-sheet-actions button{width:100%;min-height:44px;padding:9px 8px}
+  .ctg-schematic-label{max-width:calc(100% - 96px);line-height:1.25}
+
+  .routes-section{padding-top:52px;padding-bottom:52px}
+  .routes-section .routes-heading{gap:14px}
+  .routes-section .route-tools{gap:9px}
+  .routes-section .search-box,.routes-section select{min-height:46px}
+  .routes-section .mode-tabs{gap:7px;margin-inline:-2px;padding:2px 2px 7px}
+  .routes-section .mode-tab{min-height:40px;padding:9px 12px}
+  .routes-section .route-meta{margin:12px 0 8px}
+  #routeGrid.route-grid{
+    grid-template-columns:1fr!important;
+    gap:10px;
+    max-height:64vh;
+    padding:2px 4px 8px 1px;
+    scroll-snap-type:y mandatory;
+  }
+  #routeGrid.route-grid .route-card{
+    min-height:0!important;
+    padding:14px!important;
+    border-radius:15px;
+    scroll-snap-align:start;
+  }
+  #routeGrid .route-card-top{gap:10px}
+  #routeGrid .route-id{font-size:22px}
+  #routeGrid .route-corridor{margin:12px 0 6px;font-size:13px}
+  #routeGrid .route-landmarks{font-size:10.5px;line-height:1.45}
+  #routeGrid .route-card-bottom{margin-top:11px;gap:6px;flex-wrap:wrap}
+  #routeGrid .verification{font-size:9px}
+  #routeGrid .ctg-route-map-btn{min-width:58px;min-height:42px;padding:8px 12px;font-size:10px}
+  #routeGrid .favorite-btn{min-width:42px;min-height:42px}
+
+  .ctg-result-actions{width:100%;display:grid;grid-template-columns:1fr 1fr}
+  .ctg-result-actions .ctg-result-map-btn,.ctg-result-actions .text-btn{min-height:44px;width:100%}
+}
+
+@media(prefers-reduced-motion:reduce){
+  .ctg-route-loading{animation-duration:1.5s}
+}
