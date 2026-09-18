@@ -58,7 +58,8 @@
     ['Tabunok',10.2597,123.8465],['Talisay',10.2447,123.8494],['Minglanilla',10.2450,123.7964],['Naga',10.2089,123.7580],['Carcar',10.1060,123.6402],
     ['Mactan-Cebu International Airport',10.3075,123.9794],['MCIA',10.3075,123.9794],['Cebu Doctors University',10.3361,123.9351],['USC Downtown',10.2978,123.8980],['USJ-R',10.2959,123.8999],
     ['Landers Superstore Cebu',10.32072,123.90958],['Landers',10.32072,123.90958],['Kasambagan',10.3243,123.9101],['Echavez',10.3056,123.89988],
-    ['Carmen Village',10.260813,123.822988],['Carmen Village Poblacion Talisay',10.260813,123.822988],['Carmen Village, Poblacion, Talisay',10.260813,123.822988]
+    ['Carmen Village',10.260813,123.822988],['Carmen Village Poblacion Talisay',10.260813,123.822988],['Carmen Village, Poblacion, Talisay',10.260813,123.822988],
+    ['Carmen',10.5873,124.0181],['Carmen Cebu',10.5873,124.0181],['Cebu City',10.3157,123.8854]
   ];
 
   const getRoutes=()=>typeof ROUTES!=='undefined'?ROUTES:[];
@@ -105,10 +106,50 @@
   const SPATIAL_DROP_MAX_METERS=3600;
   const SPATIAL_TRANSFER_MAX_METERS=750;
 
+  const placeAliases=new Map([
+    ['it','it park'],
+    ['it park','it park'],
+    ['cebu it','it park'],
+    ['sm','sm city cebu'],
+    ['sm city','sm city cebu'],
+    ['sm cebu','sm city cebu'],
+    ['carmen village poblacion','carmen village poblacion talisay'],
+    ['carmen village talisay','carmen village poblacion talisay']
+  ]);
+
+  function catalogPlaceMatch(name){
+    const q=normalize(name);
+    if(!q)return null;
+    const aliased=placeAliases.get(q);
+    if(aliased){
+      const aliasHit=catalog.find(item=>item.key===aliased);
+      if(aliasHit)return aliasHit;
+    }
+
+    const exact=catalog.find(item=>item.key===q);
+    if(exact)return exact;
+
+    const qTokens=q.split(' ').filter(Boolean);
+    const ranked=catalog.map(item=>{
+      const key=item.key;
+      const keyTokens=key.split(' ').filter(Boolean);
+      let score=0;
+
+      const allTokens=qTokens.length&&qTokens.every(token=>keyTokens.includes(token));
+      if(allTokens)score=90+Math.min(8,qTokens.length*2);
+      else if(q.length>=4&&key.startsWith(q))score=78;
+      else if(key.length>=4&&q.startsWith(key))score=72;
+      else if(q.length>=5&&key.includes(q))score=64;
+      else if(key.length>=5&&q.includes(key))score=58;
+
+      return{item,score};
+    }).filter(row=>row.score>0).sort((a,b)=>b.score-a.score||a.item.key.length-b.item.key.length);
+
+    return ranked[0]?.item||null;
+  }
+
   const coordFor=name=>{
-    const q=normalize(name);if(!q)return null;
-    let hit=catalog.find(p=>p.key===q);
-    if(!hit)hit=catalog.find(p=>q.includes(p.key)||p.key.includes(q));
+    const hit=catalogPlaceMatch(name);
     return hit?[hit.lat,hit.lng]:null;
   };
 
@@ -1291,21 +1332,7 @@
   }
 
   function localPlaceMatch(query){
-    const q=normalize(query);
-    if(!q)return null;
-    const ranked=catalog
-      .map(item=>{
-        let score=0;
-        if(item.key===q)score=100;
-        else if(item.key.startsWith(q))score=80;
-        else if(q.startsWith(item.key))score=70;
-        else if(item.key.includes(q))score=55;
-        else if(q.includes(item.key))score=45;
-        return{item,score};
-      })
-      .filter(row=>row.score>0)
-      .sort((a,b)=>b.score-a.score);
-    const hit=ranked[0]?.item;
+    const hit=catalogPlaceMatch(query);
     return hit?{label:hit.name,coord:[hit.lat,hit.lng],source:'atlas'}:null;
   }
 
